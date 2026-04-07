@@ -21,3 +21,4 @@ pub mod info;
 pub mod traits;
 pub mod types;
 pub mod util;
+pub mod video;
