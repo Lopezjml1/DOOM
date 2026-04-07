@@ -17,4 +17,5 @@
 //! fixed-point arithmetic, angles, trigonometric tables, game definitions,
 //! player state, map objects, and network structures.
 
+pub mod doomtype;
 pub mod fixed;
