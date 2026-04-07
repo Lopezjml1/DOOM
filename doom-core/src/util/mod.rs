@@ -11,12 +11,9 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
 
-//! DOOM core game logic library.
+//! Utility modules for the DOOM engine.
 //!
-//! Contains deterministic gameplay, types, info tables, UI, and utilities.
-//! This crate implements the platform-independent core of the DOOM engine,
-//! translated from the original C source in linuxdoom-1.10/.
+//! General-purpose utility functions used across the engine.
+//! Translated from the `m_*.c/h` utility files in `linuxdoom-1.10/`.
 
-pub mod traits;
-pub mod types;
-pub mod util;
+pub mod swap;
