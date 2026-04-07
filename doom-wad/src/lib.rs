@@ -34,6 +34,7 @@
 
 pub mod lump_cache;
 pub mod types;
+pub mod wad_file;
 pub mod wad_provider;
 
 // Re-export key public types at crate root for ergonomic access.
@@ -41,4 +42,5 @@ pub mod wad_provider;
 // `use doom_wad::types::WadType;`.
 pub use lump_cache::LumpCache;
 pub use types::{CachedLump, FileLump, LumpInfo, LumpNum, PurgeTag, WadError, WadInfo, WadType};
+pub use wad_file::WadFile;
 pub use wad_provider::WadProvider;
