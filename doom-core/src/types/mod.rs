@@ -18,6 +18,7 @@
 //! player state, map objects, and network structures.
 
 pub mod angle;
+pub mod doomdef;
 pub mod doomtype;
 pub mod event;
 pub mod fixed;
