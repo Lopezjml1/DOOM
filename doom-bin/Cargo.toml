@@ -1,0 +1,15 @@
+[package]
+name = "doom-bin"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Executable entry point for DOOM Rust port"
+
+[dependencies]
+doom-core = { path = "../doom-core" }
+doom-wad = { path = "../doom-wad" }
+doom-render-soft = { path = "../doom-render-soft" }
+doom-platform-win = { path = "../doom-platform-win" }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

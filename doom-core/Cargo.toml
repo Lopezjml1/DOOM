@@ -1,0 +1,13 @@
+[package]
+name = "doom-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Deterministic game logic for DOOM Rust port"
+
+[dependencies]
+doom-wad = { path = "../doom-wad" }
+bitflags = { workspace = true }
+byteorder = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

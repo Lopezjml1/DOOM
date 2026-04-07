@@ -1,0 +1,13 @@
+[package]
+name = "doom-platform-win"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Windows 11 platform backend for DOOM Rust port (SDL2)"
+
+[dependencies]
+doom-core = { path = "../doom-core" }
+sdl2 = { workspace = true }
+dirs = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

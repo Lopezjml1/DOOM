@@ -1,0 +1,5 @@
+# Clippy lint configuration for DOOM Rust workspace
+too-many-arguments-threshold = 12
+too-many-lines-threshold = 200
+type-complexity-threshold = 350
+cognitive-complexity-threshold = 50

@@ -1,0 +1,3 @@
+# Cargo build configuration for DOOM Rust port
+# On Windows, the default target is x86_64-pc-windows-msvc
+# On Linux (CI/dev), the native target is used automatically

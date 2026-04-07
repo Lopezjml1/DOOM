@@ -1,0 +1,11 @@
+[package]
+name = "doom-wad"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "WAD/IWAD file parsing library for DOOM Rust port"
+
+[dependencies]
+byteorder = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

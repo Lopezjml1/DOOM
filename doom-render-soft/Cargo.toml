@@ -1,0 +1,11 @@
+[package]
+name = "doom-render-soft"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Software renderer for DOOM Rust port"
+
+[dependencies]
+doom-core = { path = "../doom-core" }
+doom-wad = { path = "../doom-wad" }
+tracing = { workspace = true }
