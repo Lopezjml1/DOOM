@@ -33,8 +33,10 @@
 //! New Rust: `use doom_wad::WadProvider;` / `wad.cache_lump_name("PLAYPAL", PurgeTag::Cache)`
 
 pub mod types;
+pub mod wad_provider;
 
 // Re-export key public types at crate root for ergonomic access.
 // Downstream crates can write `use doom_wad::WadType;` instead of
 // `use doom_wad::types::WadType;`.
 pub use types::{CachedLump, FileLump, LumpInfo, LumpNum, PurgeTag, WadError, WadInfo, WadType};
+pub use wad_provider::WadProvider;
