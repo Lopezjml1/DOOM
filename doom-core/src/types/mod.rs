@@ -18,6 +18,7 @@
 //! player state, map objects, and network structures.
 
 pub mod doomtype;
+pub mod event;
 pub mod fixed;
 pub mod thinker;
 pub mod ticcmd;
