@@ -11,27 +11,38 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
 
-//! Translated from linuxdoom-1.10/i_video.c — SDL2 window creation and
-//! event pump management.
+//! SDL2 window management — creation, event pump, resize, and close handling.
 //!
-//! Replaces the X11/Xlib window initialisation (`XCreateWindow`,
-//! `XSelectInput`, MIT-SHM setup) and the X11 event handling
-//! (`XNextEvent` / `XPending`) with an SDL2 window and event pump.
+//! Translated from `linuxdoom-1.10/i_video.c` (lines 692-914).
+//! Replaces X11/Xlib `XOpenDisplay`, `XCreateWindow`, `XMapWindow`,
+//! MIT-SHM shared memory, and XEvent processing with SDL2 equivalents.
 //!
-//! [`WindowManager`] is responsible for:
-//! - Creating the SDL2 video subsystem and opening a resizable window at
-//!   the specified scale (default 3×, so 960×600 for DOOM's 320×200).
-//! - Providing access to the [`sdl2::EventPump`] so the platform layer
-//!   can poll input events and translate them to DOOM [`Event`]s.
-//! - Managing the mouse grab state for in-game capture.
+//! ## Original X11 Flow (i_video.c:I_InitGraphics)
+//! 1. `XOpenDisplay()` — open connection to X server
+//! 2. `XMatchVisualInfo()` — require 8-bit PseudoColor
+//! 3. `XCreateColormap()` — allocate 256-entry colormap
+//! 4. `XCreateWindow()` — create window at SCREENWIDTH*multiply × SCREENHEIGHT*multiply
+//! 5. `XMapWindow()` — make window visible
+//! 6. MIT-SHM setup for fast framebuffer blitting
 //!
-//! The window itself is eventually transferred to [`super::video::VideoOutput`]
-//! which converts it into an SDL2 canvas for rendering.
+//! ## SDL2 Replacement
+//! 1. `sdl2::init()` — initialize SDL2 subsystems
+//! 2. `video.window()` — create window titled "DOOM"
+//! 3. Window is created at a scaled size (default 3x of 320×200 = 960×600)
+//! 4. SDL2 manages all display/GPU resources internally
+//!
+//! ## Key Behavioural Notes
+//! - [`WindowManager`] owns the SDL2 window, video subsystem, and event pump.
+//! - The window can be transferred to [`super::video::VideoOutput`] via
+//!   [`WindowManager::take_window`], which converts it into a rendering canvas.
+//! - Mouse grab (replacing `XGrabPointer`) is toggled via [`WindowManager::set_grab_mouse`].
+//! - SDL2 resources are cleaned up automatically via Rust's `Drop` trait,
+//!   replacing `I_ShutdownGraphics` (XShmDetach, shmdt, shmctl).
 
 use sdl2::video::Window;
 use sdl2::{EventPump, Sdl, VideoSubsystem};
 use thiserror::Error;
-use tracing::info;
+use tracing::{error, info, warn};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -108,12 +119,25 @@ impl WindowManager {
     /// Returns [`WindowError`] if the video subsystem, window, or event
     /// pump cannot be initialised.
     pub fn new(sdl_context: &Sdl, scale: Option<u32>) -> Result<Self, WindowError> {
+        // Clamp scale to a reasonable range [1, 8].
+        // The original i_video.c (lines 719-726) supported -2, -3, -4
+        // command-line multiply factors. We default to 3× for modern displays.
         let scale = match scale {
-            Some(s) if s > 0 => s,
+            Some(s) if s > 0 && s <= 8 => s,
+            Some(s) if s > 8 => {
+                warn!(
+                    "Requested scale {}× exceeds maximum of 8 — clamping to 8×",
+                    s
+                );
+                8
+            }
             _ => DEFAULT_SCALE,
         };
 
-        let video_subsystem = sdl_context.video().map_err(WindowError::SdlInit)?;
+        let video_subsystem = sdl_context.video().map_err(|e| {
+            error!("SDL2 video subsystem initialisation failed: {}", e);
+            WindowError::SdlInit(e)
+        })?;
 
         let width = SCREENWIDTH * scale;
         let height = SCREENHEIGHT * scale;
@@ -123,9 +147,15 @@ impl WindowManager {
             .position_centered()
             .resizable()
             .build()
-            .map_err(|e| WindowError::WindowCreation(e.to_string()))?;
+            .map_err(|e| {
+                error!("SDL2 window creation failed: {}", e);
+                WindowError::WindowCreation(e.to_string())
+            })?;
 
-        let event_pump = sdl_context.event_pump().map_err(WindowError::EventPump)?;
+        let event_pump = sdl_context.event_pump().map_err(|e| {
+            error!("SDL2 event pump creation failed: {}", e);
+            WindowError::EventPump(e)
+        })?;
 
         info!(
             "Window created: \"{}\" {}×{} ({}× scale)",
@@ -190,12 +220,23 @@ impl WindowManager {
     /// Set the mouse grab state.
     ///
     /// When grabbed, the mouse cursor is confined to the window and hidden,
-    /// providing the in-game mouse look experience.
+    /// providing the in-game mouse look experience.  Replaces
+    /// `XGrabPointer()` from `i_video.c` lines 848-851.
+    ///
+    /// If the window has already been transferred via [`Self::take_window`],
+    /// a warning is logged and the grab state is still recorded internally
+    /// so it can be applied to the canvas window by other means.
     pub fn set_grab_mouse(&mut self, grab: bool) {
         self.grab_mouse = grab;
         if let Some(ref mut window) = self.window {
             window.set_grab(grab);
             self.video_subsystem.sdl().mouse().show_cursor(!grab);
+        } else {
+            warn!(
+                "set_grab_mouse({}) called after window was transferred — \
+                 grab state recorded but not applied to SDL2 window",
+                grab
+            );
         }
     }
 
