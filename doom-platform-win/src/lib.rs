@@ -27,6 +27,7 @@
 //! Additional modules (audio, timer, filesystem, input) will be added
 //! as subsequent implementation phases are completed.
 
+pub mod audio;
 pub mod filesystem;
 pub mod timer;
 pub mod video;
