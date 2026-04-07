@@ -18,5 +18,7 @@
 //! `doom-render-soft` crates provide concrete implementations.
 
 pub mod audio;
+pub mod platform;
 
 pub use audio::AudioBackend;
+pub use platform::PlatformHost;
