@@ -17,6 +17,7 @@
 //! This crate implements the platform-independent core of the DOOM engine,
 //! translated from the original C source in linuxdoom-1.10/.
 
+pub mod info;
 pub mod traits;
 pub mod types;
 pub mod util;
