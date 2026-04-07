@@ -19,6 +19,7 @@
 
 pub mod game;
 pub mod info;
+pub mod play;
 pub mod traits;
 pub mod types;
 pub mod util;
