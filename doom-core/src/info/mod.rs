@@ -35,7 +35,9 @@
 
 pub mod sounds;
 pub mod sprites;
+pub mod states;
 
 // Re-export key types for ergonomic access.
 pub use sounds::{MusicEnum, MusicInfo, SfxEnum, SfxInfo, NUMMUSIC, NUMSFX, S_MUSIC, S_SFX};
 pub use sprites::{SpriteNum, NUMSPRITES, SPRITE_NAMES};
+pub use states::{ActionFnId, State, StateNum, NUMSTATES, STATES};
