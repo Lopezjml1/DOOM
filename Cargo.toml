@@ -1,7 +1,45 @@
+# =============================================================================
+# DOOM Rust — Root Workspace Manifest
+# =============================================================================
+#
+# Replaces: linuxdoom-1.10/Makefile
+#
+# The original Makefile compiled ~55 C translation units with GCC using:
+#   CFLAGS = -g -Wall -DNORMALUNIX -DLINUX
+#   LIBS   = -lXext -lX11 -lnsl -lm
+# and linked them into a single `linuxxdoom` ELF binary.
+#
+# This Cargo workspace replaces that flat C build with a modular 5-crate
+# Rust workspace targeting Windows 11 via SDL2. The crate dependency
+# hierarchy is:
+#
+#   doom-wad          (foundational — WAD/IWAD file parsing)
+#     └─► doom-core   (deterministic game logic, depends on doom-wad)
+#           ├─► doom-render-soft   (software renderer)
+#           └─► doom-platform-win  (Windows 11 SDL2 backend)
+#                 └─► doom-bin     (executable entry point)
+#
+# Build:   cargo build --release
+# Test:    cargo test --workspace
+# Lint:    cargo clippy --all-targets -- -D warnings
+# Format:  cargo fmt --check
+# =============================================================================
+
 [workspace]
-members = ["doom-wad", "doom-core", "doom-render-soft", "doom-platform-win", "doom-bin"]
+# Members are listed in dependency-hierarchy order: foundational crates first,
+# then crates that depend on them, and finally the executable binary crate.
+members = [
+    "doom-wad",
+    "doom-core",
+    "doom-render-soft",
+    "doom-platform-win",
+    "doom-bin",
+]
 resolver = "2"
 
+# =============================================================================
+# Shared package metadata inherited by all member crates via `key.workspace = true`
+# =============================================================================
 [workspace.package]
 edition = "2021"
 version = "0.1.0"
@@ -9,19 +47,50 @@ license = "GPL-2.0"
 description = "DOOM 1.10 ported to Rust for Windows 11"
 rust-version = "1.75"
 
+# =============================================================================
+# Centralized dependency versions — each member crate references these via
+# `dependency = { workspace = true }` to keep versions consistent across the
+# entire workspace. Version ranges follow the AAP §0.6.1 specification.
+# =============================================================================
 [workspace.dependencies]
+
+# SDL2 with bundled feature compiles SDL2 from C source during cargo build,
+# making the build self-contained on Windows 11 without pre-installed system
+# libraries. Provides window management, input, audio, and timer facilities.
 sdl2 = { version = "0.37", features = ["bundled"] }
+
+# Derive-based CLI argument parsing for --iwad, --pwad, --warp, --skill flags.
 clap = { version = "4.5", features = ["derive"] }
+
+# Structured diagnostic logging framework with configurable output and filtering.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Little-endian byte reading for WAD file parsing and binary data deserialization.
 byteorder = "1.5"
+
+# Ergonomic custom error type derivation via #[derive(Error)].
 thiserror = "2.0"
+
+# Type-safe bitflag types for mobj flags, linedef flags, and sector properties.
 bitflags = "2.6"
+
+# Windows known-folder paths (AppData, Documents) for config and save file locations.
 dirs = "6.0"
 
+# =============================================================================
+# Build profiles
+# =============================================================================
+
+# Release profile optimized for game performance. DOOM's software renderer
+# benefits significantly from compiler optimizations, particularly in the
+# inner-loop column and span drawing routines (R_DrawColumn, R_DrawSpan).
 [profile.release]
 opt-level = 2
 lto = "thin"
 
+# Dev profile with slight optimization for playable debug builds. Without at
+# least opt-level 1, the software renderer may not maintain 35 tics/second
+# during complex scenes.
 [profile.dev]
 opt-level = 1
