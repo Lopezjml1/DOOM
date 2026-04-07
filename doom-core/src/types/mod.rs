@@ -19,3 +19,4 @@
 
 pub mod doomtype;
 pub mod fixed;
+pub mod thinker;
