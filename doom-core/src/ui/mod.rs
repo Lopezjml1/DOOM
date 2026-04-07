@@ -19,6 +19,7 @@
 
 pub mod hud_lib;
 pub mod statusbar_lib;
+pub mod wipe;
 
 // Convenience re-exports for HUD widget types.
 pub use hud_lib::{HuInputText, HuScrollText, HuTextLine};
