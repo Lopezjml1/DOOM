@@ -835,21 +835,21 @@ pub mod french {
     pub const GOTHTHBONUS: &str = "BONUS DE SANTE RECUPERE.";
     pub const GOTARMBONUS: &str = "BONUS D'ARMURE RECUPERE.";
     pub const GOTSTIM: &str = "STIMPACK RECUPERE.";
-    pub const GOTMEDINEED: &str = "MEDIKIT VRAIMENT NECESSAIRE!";
+    pub const GOTMEDINEED: &str = "MEDIKIT RECUPERE. VOUS EN AVEZ VRAIMENT BESOIN!";
     pub const GOTMEDIKIT: &str = "MEDIKIT RECUPERE.";
     pub const GOTSUPER: &str = "SUPERCHARGE!";
-    pub const GOTBLUECARD: &str = "CARTE BLEUE RECUPEREE.";
-    pub const GOTYELWCARD: &str = "CARTE JAUNE RECUPEREE.";
-    pub const GOTREDCARD: &str = "CARTE ROUGE RECUPEREE.";
-    pub const GOTBLUESKUL: &str = "CRANE BLEU RECUPERE.";
-    pub const GOTYELWSKUL: &str = "CRANE JAUNE RECUPERE.";
-    pub const GOTREDSKULL: &str = "CRANE ROUGE RECUPERE.";
+    pub const GOTBLUECARD: &str = "CARTE MAGNETIQUE BLEUE RECUPEREE.";
+    pub const GOTYELWCARD: &str = "CARTE MAGNETIQUE JAUNE RECUPEREE.";
+    pub const GOTREDCARD: &str = "CARTE MAGNETIQUE ROUGE RECUPEREE.";
+    pub const GOTBLUESKUL: &str = "CLEF CRANE BLEUE RECUPEREE.";
+    pub const GOTYELWSKUL: &str = "CLEF CRANE JAUNE RECUPEREE.";
+    pub const GOTREDSKULL: &str = "CLEF CRANE ROUGE RECUPEREE.";
     pub const GOTINVUL: &str = "INVULNERABILITE!";
     pub const GOTBERSERK: &str = "BERSERK!";
     pub const GOTINVIS: &str = "INVISIBILITE PARTIELLE ";
     pub const GOTSUIT: &str = "COMBINAISON ANTI-RADIATIONS ";
     pub const GOTMAP: &str = "CARTE INFORMATIQUE ";
-    pub const GOTVISOR: &str = "VISEUR D'AMPLIFICATION DE LUMIERE ";
+    pub const GOTVISOR: &str = "VISEUR A AMPLIFICATION DE LUMIERE ";
     pub const GOTMSPHERE: &str = "MEGASPHERE!";
     pub const GOTCLIP: &str = "CHARGEUR RECUPERE.";
     pub const GOTCLIPBOX: &str = "BOITE DE BALLES RECUPEREE.";
@@ -857,28 +857,29 @@ pub mod french {
     pub const GOTROCKBOX: &str = "CAISSE DE ROQUETTES RECUPEREE.";
     pub const GOTCELL: &str = "CELLULE D'ENERGIE RECUPEREE.";
     pub const GOTCELLBOX: &str = "PACK DE CELLULES D'ENERGIE RECUPERE.";
-    pub const GOTSHELLS: &str = "CARTOUCHES RECUPEREES.";
+    pub const GOTSHELLS: &str = "4 CARTOUCHES RECUPEREES.";
     pub const GOTSHELLBOX: &str = "BOITE DE CARTOUCHES RECUPEREE.";
-    pub const GOTBACKPACK: &str = "SAC PLEIN DE MUNITIONS!";
-    pub const GOTBFG9000: &str = "BFG9000!  OH, OUI!";
-    pub const GOTCHAINGUN: &str = "GATLING RECUPEREE!";
+    pub const GOTBACKPACK: &str = "SAC PLEIN DE MUNITIONS RECUPERE!";
+    pub const GOTBFG9000: &str = "VOUS AVEZ UN BFG9000!  OH, OUI!";
+    pub const GOTCHAINGUN: &str = "VOUS AVEZ LA MITRAILLEUSE!";
     pub const GOTCHAINSAW: &str = "UNE TRONCONNEUSE!";
-    pub const GOTLAUNCHER: &str = "LANCE-ROQUETTES RECUPERE!";
-    pub const GOTPLASMA: &str = "FUSIL A PLASMA RECUPERE!";
-    pub const GOTSHOTGUN: &str = "FUSIL A POMPE RECUPERE!";
-    pub const GOTSHOTGUN2: &str = "SUPER FUSIL A POMPE RECUPERE!";
+    pub const GOTLAUNCHER: &str = "VOUS AVEZ UN LANCE-ROQUETTES!";
+    pub const GOTPLASMA: &str = "VOUS AVEZ UN FUSIL A PLASMA!";
+    pub const GOTSHOTGUN: &str = "VOUS AVEZ UN FUSIL!";
+    pub const GOTSHOTGUN2: &str = "VOUS AVEZ UN SUPER FUSIL!";
 
     // -----------------------------------------------------------------------
     //  P_Doors.C (French)
     //  NOTE: In the original d_french.h, PD_BLUEK/PD_REDK/PD_YELLOWK are
     //  aliases for PD_BLUEO/PD_REDO/PD_YELLOWO (same text).
     // -----------------------------------------------------------------------
-    pub const PD_BLUEO: &str = "IL VOUS FAUT UNE CLE BLEUE POUR OUVRIR CETTE PORTE";
-    pub const PD_REDO: &str = "IL VOUS FAUT UNE CLE ROUGE POUR OUVRIR CETTE PORTE";
-    pub const PD_YELLOWO: &str = "IL VOUS FAUT UNE CLE JAUNE POUR OUVRIR CETTE PORTE";
-    pub const PD_BLUEK: &str = "IL VOUS FAUT UNE CLE BLEUE POUR OUVRIR CETTE PORTE";
-    pub const PD_REDK: &str = "IL VOUS FAUT UNE CLE ROUGE POUR OUVRIR CETTE PORTE";
-    pub const PD_YELLOWK: &str = "IL VOUS FAUT UNE CLE JAUNE POUR OUVRIR CETTE PORTE";
+    pub const PD_BLUEO: &str = "IL VOUS FAUT UNE CLEF BLEUE";
+    pub const PD_REDO: &str = "IL VOUS FAUT UNE CLEF ROUGE";
+    pub const PD_YELLOWO: &str = "IL VOUS FAUT UNE CLEF JAUNE";
+    // d_french.h:120-122: PD_BLUEK/REDK/YELLOWK are aliases for PD_BLUEO/REDO/YELLOWO
+    pub const PD_BLUEK: &str = PD_BLUEO;
+    pub const PD_REDK: &str = PD_REDO;
+    pub const PD_YELLOWK: &str = PD_YELLOWO;
 
     // -----------------------------------------------------------------------
     //  G_game.C (French)
@@ -891,90 +892,92 @@ pub mod french {
     // -----------------------------------------------------------------------
     pub const HUSTR_MSGU: &str = "[MESSAGE NON ENVOYE]";
 
-    pub const HUSTR_E1M1: &str = "E1M1: le hangar";
-    pub const HUSTR_E1M2: &str = "E1M2: l'usine nucl\u{e9}aire";
-    pub const HUSTR_E1M3: &str = "E1M3: la raffinerie de toxines";
-    pub const HUSTR_E1M4: &str = "E1M4: le centre de commandement";
-    pub const HUSTR_E1M5: &str = "E1M5: le laboratoire Phobos";
-    pub const HUSTR_E1M6: &str = "E1M6: le traitement central";
-    pub const HUSTR_E1M7: &str = "E1M7: centre informatique";
-    pub const HUSTR_E1M8: &str = "E1M8: anomalie Phobos";
-    pub const HUSTR_E1M9: &str = "E1M9: base militaire de Deimos";
+    pub const HUSTR_E1M1: &str = "E1M1: HANGAR";
+    pub const HUSTR_E1M2: &str = "E1M2: USINE NUCLEAIRE ";
+    pub const HUSTR_E1M3: &str = "E1M3: RAFFINERIE DE TOXINES ";
+    pub const HUSTR_E1M4: &str = "E1M4: CENTRE DE CONTROLE ";
+    pub const HUSTR_E1M5: &str = "E1M5: LABORATOIRE PHOBOS ";
+    pub const HUSTR_E1M6: &str = "E1M6: TRAITEMENT CENTRAL ";
+    pub const HUSTR_E1M7: &str = "E1M7: CENTRE INFORMATIQUE ";
+    pub const HUSTR_E1M8: &str = "E1M8: ANOMALIE PHOBOS ";
+    pub const HUSTR_E1M9: &str = "E1M9: BASE MILITAIRE ";
 
-    pub const HUSTR_E2M1: &str = "E2M1: anomalie de Deimos";
-    pub const HUSTR_E2M2: &str = "E2M2: zone de confinement";
-    pub const HUSTR_E2M3: &str = "E2M3: la raffinerie";
-    pub const HUSTR_E2M4: &str = "E2M4: laboratoire de Deimos";
-    pub const HUSTR_E2M5: &str = "E2M5: centre de commandement";
-    pub const HUSTR_E2M6: &str = "E2M6: salles broyeuses";
-    pub const HUSTR_E2M7: &str = "E2M7: donjons de l'enfer";
-    pub const HUSTR_E2M8: &str = "E2M8: la Tour de Babel";
-    pub const HUSTR_E2M9: &str = "E2M9: la forteresse du mystere";
+    pub const HUSTR_E2M1: &str = "E2M1: ANOMALIE DEIMOS ";
+    pub const HUSTR_E2M2: &str = "E2M2: ZONE DE CONFINEMENT ";
+    pub const HUSTR_E2M3: &str = "E2M3: RAFFINERIE";
+    pub const HUSTR_E2M4: &str = "E2M4: LABORATOIRE DEIMOS ";
+    pub const HUSTR_E2M5: &str = "E2M5: CENTRE DE CONTROLE ";
+    pub const HUSTR_E2M6: &str = "E2M6: HALLS DES DAMNES ";
+    pub const HUSTR_E2M7: &str = "E2M7: CUVES DE REPRODUCTION ";
+    pub const HUSTR_E2M8: &str = "E2M8: TOUR DE BABEL ";
+    pub const HUSTR_E2M9: &str = "E2M9: FORTERESSE DU MYSTERE ";
 
-    pub const HUSTR_E3M1: &str = "E3M1: la citadelle de l'enfer";
-    pub const HUSTR_E3M2: &str = "E3M2: le bourbier du desespoir";
-    pub const HUSTR_E3M3: &str = "E3M3: Pandemonium";
-    pub const HUSTR_E3M4: &str = "E3M4: maison de la douleur";
-    pub const HUSTR_E3M5: &str = "E3M5: la cath\u{e9}drale pervertie";
-    pub const HUSTR_E3M6: &str = "E3M6: le mont Erebus";
-    pub const HUSTR_E3M7: &str = "E3M7: les portes de l'enfer";
+    pub const HUSTR_E3M1: &str = "E3M1: DONJON DE L'ENFER ";
+    pub const HUSTR_E3M2: &str = "E3M2: BOURBIER DU DESESPOIR ";
+    pub const HUSTR_E3M3: &str = "E3M3: PANDEMONIUM";
+    pub const HUSTR_E3M4: &str = "E3M4: MAISON DE LA DOULEUR ";
+    pub const HUSTR_E3M5: &str = "E3M5: CATHEDRALE PROFANE ";
+    pub const HUSTR_E3M6: &str = "E3M6: MONT EREBUS";
+    pub const HUSTR_E3M7: &str = "E3M7: LIMBES";
     pub const HUSTR_E3M8: &str = "E3M8: DIS";
-    pub const HUSTR_E3M9: &str = "E3M9: Warrens";
+    pub const HUSTR_E3M9: &str = "E3M9: CLAPIERS";
 
-    // DOOM II level names (French)
-    pub const HUSTR_1: &str = "NIVEAU 1: l'entr\u{e9}e";
-    pub const HUSTR_2: &str = "NIVEAU 2: les halls souterrains";
-    pub const HUSTR_3: &str = "NIVEAU 3: le point d'attaque";
-    pub const HUSTR_4: &str = "NIVEAU 4: le d\u{e9}p\u{f4}t";
-    pub const HUSTR_5: &str = "NIVEAU 5: les \u{e9}gouts";
-    pub const HUSTR_6: &str = "NIVEAU 6: le broyeur";
-    pub const HUSTR_7: &str = "NIVEAU 7: l'h\u{e9}catombe";
-    pub const HUSTR_8: &str = "NIVEAU 8: ruses et pi\u{e8}ges";
-    pub const HUSTR_9: &str = "NIVEAU 9: le puits";
-    pub const HUSTR_10: &str = "NIVEAU 10: la base de ravitaillement";
-    pub const HUSTR_11: &str = "NIVEAU 11: le cercle de la mort!";
-    pub const HUSTR_12: &str = "NIVEAU 12: l'usine";
-    pub const HUSTR_13: &str = "NIVEAU 13: le centre ville";
-    pub const HUSTR_14: &str = "NIVEAU 14: les grandes profondeurs";
-    pub const HUSTR_15: &str = "NIVEAU 15: la zone industrielle";
-    pub const HUSTR_16: &str = "NIVEAU 16: la banlieue";
-    pub const HUSTR_17: &str = "NIVEAU 17: les immeubles";
-    pub const HUSTR_18: &str = "NIVEAU 18: la cour";
-    pub const HUSTR_19: &str = "NIVEAU 19: la citadelle";
-    pub const HUSTR_20: &str = "NIVEAU 20: je t'ai eu!";
-    pub const HUSTR_21: &str = "NIVEAU 21: le Mt. Erebus";
-    pub const HUSTR_22: &str = "NIVEAU 22: les catacombes";
-    pub const HUSTR_23: &str = "NIVEAU 23: la grande f\u{ea}te de barils";
-    pub const HUSTR_24: &str = "NIVEAU 24: le gouffre";
-    pub const HUSTR_25: &str = "NIVEAU 25: les chutes de sang";
-    pub const HUSTR_26: &str = "NIVEAU 26: les mines abandonn\u{e9}es";
-    pub const HUSTR_27: &str = "NIVEAU 27: terrain de jeu du monstre";
-    pub const HUSTR_28: &str = "NIVEAU 28: le monde de l'esprit";
-    pub const HUSTR_29: &str = "NIVEAU 29: la limite";
-    pub const HUSTR_30: &str = "NIVEAU 30: l'ic\u{f4}ne du p\u{e9}ch\u{e9}";
-    pub const HUSTR_31: &str = "NIVEAU 31: wolfenstein";
-    pub const HUSTR_32: &str = "NIVEAU 32: Grosse";
+    // DOOM II level names (French) — verbatim from d_french.h
+    pub const HUSTR_1: &str = "NIVEAU 1: ENTREE ";
+    pub const HUSTR_2: &str = "NIVEAU 2: HALLS SOUTERRAINS ";
+    pub const HUSTR_3: &str = "NIVEAU 3: LE FEU NOURRI ";
+    pub const HUSTR_4: &str = "NIVEAU 4: LE FOYER ";
+    pub const HUSTR_5: &str = "NIVEAU 5: LES EGOUTS ";
+    pub const HUSTR_6: &str = "NIVEAU 6: LE BROYEUR ";
+    pub const HUSTR_7: &str = "NIVEAU 7: L'HERBE DE LA MORT";
+    pub const HUSTR_8: &str = "NIVEAU 8: RUSES ET PIEGES ";
+    pub const HUSTR_9: &str = "NIVEAU 9: LE PUITS ";
+    pub const HUSTR_10: &str = "NIVEAU 10: BASE DE RAVITAILLEMENT ";
+    pub const HUSTR_11: &str = "NIVEAU 11: LE CERCLE DE LA MORT!";
+    pub const HUSTR_12: &str = "NIVEAU 12: L'USINE ";
+    pub const HUSTR_13: &str = "NIVEAU 13: LE CENTRE VILLE";
+    pub const HUSTR_14: &str = "NIVEAU 14: LES ANTRES PROFONDES ";
+    pub const HUSTR_15: &str = "NIVEAU 15: LA ZONE INDUSTRIELLE ";
+    pub const HUSTR_16: &str = "NIVEAU 16: LA BANLIEUE";
+    pub const HUSTR_17: &str = "NIVEAU 17: LES IMMEUBLES";
+    pub const HUSTR_18: &str = "NIVEAU 18: LA COUR ";
+    pub const HUSTR_19: &str = "NIVEAU 19: LA CITADELLE ";
+    pub const HUSTR_20: &str = "NIVEAU 20: JE T'AI EU!";
+    pub const HUSTR_21: &str = "NIVEAU 21: LE NIRVANA";
+    pub const HUSTR_22: &str = "NIVEAU 22: LES CATACOMBES ";
+    pub const HUSTR_23: &str = "NIVEAU 23: LA GRANDE FETE ";
+    pub const HUSTR_24: &str = "NIVEAU 24: LE GOUFFRE ";
+    pub const HUSTR_25: &str = "NIVEAU 25: LES CHUTES DE SANG";
+    pub const HUSTR_26: &str = "NIVEAU 26: LES MINES ABANDONNEES ";
+    pub const HUSTR_27: &str = "NIVEAU 27: CHEZ LES MONSTRES ";
+    pub const HUSTR_28: &str = "NIVEAU 28: LE MONDE DE L'ESPRIT ";
+    pub const HUSTR_29: &str = "NIVEAU 29: LA LIMITE ";
+    pub const HUSTR_30: &str = "NIVEAU 30: L'ICONE DU PECHE ";
+    pub const HUSTR_31: &str = "NIVEAU 31: WOLFENSTEIN";
+    pub const HUSTR_32: &str = "NIVEAU 32: LE MASSACRE";
 
     // -----------------------------------------------------------------------
     //  Chat macros (French)
     // -----------------------------------------------------------------------
-    pub const HUSTR_CHATMACRO0: &str = "JE SUIS PRET A LEUR EN METTRE PLEIN LA VUE!";
-    pub const HUSTR_CHATMACRO1: &str = "J'EN SUIS!";
-    pub const HUSTR_CHATMACRO2: &str = "JE COUVRE TES ARRIERES.";
-    pub const HUSTR_CHATMACRO3: &str = "TU ES NUL!";
-    pub const HUSTR_CHATMACRO4: &str = "JEU MACHIAVEL!";
-    pub const HUSTR_CHATMACRO5: &str = "AARRRRGGHHH!!!";
-    pub const HUSTR_CHATMACRO6: &str = "RETIENS-LES!";
-    pub const HUSTR_CHATMACRO7: &str = "J'AI BESOIN DE RENFORT!";
-    pub const HUSTR_CHATMACRO8: &str = "JE VAIS TE DEFONCER!";
+    // NOTE: d_french.h defines CHATMACRO1 first, then 2..9, then 0 last.
+    // The numbering (0–9) is preserved here for consistent indexing.
+    pub const HUSTR_CHATMACRO0: &str = "NON";
+    pub const HUSTR_CHATMACRO1: &str = "JE SUIS PRET A LEUR EN FAIRE BAVER!";
+    pub const HUSTR_CHATMACRO2: &str = "JE VAIS BIEN.";
+    pub const HUSTR_CHATMACRO3: &str = "JE N'AI PAS L'AIR EN FORME!";
+    pub const HUSTR_CHATMACRO4: &str = "AU SECOURS!";
+    pub const HUSTR_CHATMACRO5: &str = "TU CRAINS!";
+    pub const HUSTR_CHATMACRO6: &str = "LA PROCHAINE FOIS, MINABLE...";
+    pub const HUSTR_CHATMACRO7: &str = "VIENS ICI!";
+    pub const HUSTR_CHATMACRO8: &str = "JE VAIS M'EN OCCUPER.";
     pub const HUSTR_CHATMACRO9: &str = "OUI";
 
-    // Talk to self (French)
+    // Talk to self (French) — verbatim from d_french.h
     pub const HUSTR_TALKTOSELF1: &str = "VOUS PARLEZ TOUT SEUL ";
-    pub const HUSTR_TALKTOSELF2: &str = "QUI EST LA? ";
+    pub const HUSTR_TALKTOSELF2: &str = "QUI EST LA?";
     pub const HUSTR_TALKTOSELF3: &str = "VOUS VOUS FAITES PEUR ";
     pub const HUSTR_TALKTOSELF4: &str = "VOUS COMMENCEZ A DELIRER ";
-    pub const HUSTR_TALKTOSELF5: &str = "VOUS ETES DEJA MORT ";
+    pub const HUSTR_TALKTOSELF5: &str = "VOUS ETES LARGUE...";
 
     pub const HUSTR_MESSAGESENT: &str = "[MESSAGE ENVOYE]";
 
@@ -1003,18 +1006,19 @@ pub mod french {
     // -----------------------------------------------------------------------
     //  ST_stuff.C (French)
     // -----------------------------------------------------------------------
+    // ST_stuff.C (French) — verbatim from d_french.h
     pub const STSTR_MUS: &str = "CHANGEMENT DE MUSIQUE ";
     pub const STSTR_NOMUS: &str = "IMPOSSIBLE SELECTION";
     pub const STSTR_DQDON: &str = "INVULNERABILITE ON ";
     pub const STSTR_DQDOFF: &str = "INVULNERABILITE OFF";
-    pub const STSTR_KFAADDED: &str = "ARMES RECUPEREES";
-    pub const STSTR_FAADDED: &str = "MUNITIONS RECUPEREES ";
-    pub const STSTR_NCON: &str = "NOCLIP ON";
-    pub const STSTR_NCOFF: &str = "NOCLIP OFF";
+    pub const STSTR_KFAADDED: &str = "ARMEMENT MAXIMUM! ";
+    pub const STSTR_FAADDED: &str = "ARMES (SAUF CLEFS) AJOUTEES";
+    pub const STSTR_NCON: &str = "BARRIERES ON";
+    pub const STSTR_NCOFF: &str = "BARRIERES OFF";
     // NOTE: leading space preserved from original d_french.h
     pub const STSTR_BEHOLD: &str = " inVuln, Str, Inviso, Rad, Allmap, or Lite-amp";
-    pub const STSTR_BEHOLDX: &str = "POUVOIR ACTIVE";
-    pub const STSTR_CHOPPERS: &str = "... STRAFE-RUNNER ATTAQUE!";
+    pub const STSTR_BEHOLDX: &str = "AMELIORATION ACTIVEE";
+    pub const STSTR_CHOPPERS: &str = "... DOESN'T SUCK - GM";
     pub const STSTR_CLEV: &str = "CHANGEMENT DE NIVEAU...";
 
     // -----------------------------------------------------------------------
@@ -1023,112 +1027,136 @@ pub mod french {
     //  and T1-T6TEXT are not translated. C1-C6TEXT are provided.
     // -----------------------------------------------------------------------
 
-    pub const E1TEXT: &str = "Apres avoir vaincu les gros mechants\n\
-        et nettoye la base lunaire, vous avez\n\
-        gagne, non? Pas vrai? Ou est donc\n\
-        votre recompense et votre billet de\n\
-        retour? Quoi? Ce n'est pas fini?\n\
-        Vous vous apercevez que l'incursion\n\
-        demoniaque n'a pas ete arretee par la\n\
-        fermeture du portail dimensionnel;\n\
-        elle s'est simplement repandue.\n\
-        Vous devrez donc accomplir votre\n\
-        mission vous-meme. Le portail passe\n\
-        maintenant a travers Deimos et arrive\n\
-        directement en Enfer.\n\n\
-        Non, il n'y a pas d'autre moyen.\n\
-        Vous devrez les massacrer jusqu'au\n\
-        dernier, quel qu'en soit le prix.";
+    // Episode texts — verbatim from d_french.h (including ALL CAPS and original formatting)
+    // NOTE: The "CEN'EST" on line 5-6 is a bug in the original d_french.h (missing \n or space
+    // before "CE"), but we preserve it for behavioral parity.
+    pub const E1TEXT: &str = "\
+APRES AVOIR VAINCU LES GROS MECHANTS\n\
+ET NETTOYE LA BASE LUNAIRE, VOUS AVEZ\n\
+GAGNE, NON? PAS VRAI? OU EST DONC VOTRE\n \
+RECOMPENSE ET VOTRE BILLET DE\n\
+RETOUR? QU'EST-QUE CA VEUT DIRE?CE\
+N'EST PAS LA FIN ESPEREE!\n\
+\n\
+CA SENT LA VIANDE PUTREFIEE, MAIS\n\
+ON DIRAIT LA BASE DEIMOS. VOUS ETES\n\
+APPAREMMENT BLOQUE AUX PORTES DE L'ENFER.\n\
+LA SEULE ISSUE EST DE L'AUTRE COTE.\n\
+\n\
+POUR VIVRE LA SUITE DE DOOM, JOUEZ\n\
+A 'AUX PORTES DE L'ENFER' ET A\n\
+L'EPISODE SUIVANT, 'L'ENFER'!\n";
 
-    pub const E2TEXT: &str = "Vous avez reussi! Votre victoire sur\n\
-        les gros et vilains demons a permis\n\
-        a l'humanite d'evacuer la Terre et\n\
-        d'echapper au cauchemar. Vous vous\n\
-        demandez maintenant ou ces mauvais\n\
-        demons ont mal tourne. Tout a coup,\n\
-        vous retrouvez votre sens du devoir et\n\
-        vous constatez que, malgre que vous\n\
-        ayez remporte la bataille, la guerre\n\
-        fait encore rage.";
+    pub const E2TEXT: &str = "\
+VOUS AVEZ REUSSI. L'INFAME DEMON\n\
+QUI CONTROLAIT LA BASE LUNAIRE DE\n\
+DEIMOS EST MORT, ET VOUS AVEZ\n\
+TRIOMPHE! MAIS... OU ETES-VOUS?\n\
+VOUS GRIMPEZ JUSQU'AU BORD DE LA\n\
+LUNE ET VOUS DECOUVREZ L'ATROCE\n\
+VERITE.\n\
+\n\
+DEIMOS EST AU-DESSUS DE L'ENFER!\n\
+VOUS SAVEZ QUE PERSONNE NE S'EN\n\
+EST JAMAIS ECHAPPE, MAIS CES FUMIERS\n\
+VONT REGRETTER DE VOUS AVOIR CONNU!\n\
+VOUS REDESCENDEZ RAPIDEMENT VERS\n\
+LA SURFACE DE L'ENFER.\n\
+\n\
+VOICI MAINTENANT LE CHAPITRE FINAL DE\n\
+DOOM! -- L'ENFER.";
 
-    pub const E3TEXT: &str = "Le demon-araignee qui dirige les\n\
-        hordes d'envahisseurs de la Terre\n\
-        est mort. Avec la mort de cette\n\
-        creature, toute son armee se\n\
-        desintegre. Un portail dimensionnel\n\
-        s'ouvre et vous entrevoyez un vert\n\
-        paturage. Vous avez finalement gagne!\n\n\
-        C'est fini, non? Non, car la ou\n\
-        se trouvait le corps du demon-araignee\n\
-        se tient maintenant un enorme portail\n\
-        qui brule. Vous l'avez battu: cela ne\n\
-        mene qu'a l'Enfer. Vous vous y jetez\n\
-        sans hesiter.";
+    pub const E3TEXT: &str = "\
+LE DEMON ARACHNEEN ET REPUGNANT\n\
+QUI A DIRIGE L'INVASION DES BASES\n\
+LUNAIRES ET SEME LA MORT VIENT DE SE\n\
+FAIRE PULVERISER UNE FOIS POUR TOUTES.\n\
+\n\
+UNE PORTE SECRETE S'OUVRE. VOUS ENTREZ.\n\
+VOUS AVEZ PROUVE QUE VOUS POUVIEZ\n\
+RESISTER AUX HORREURS DE L'ENFER.\n\
+IL SAIT ETRE BEAU JOUEUR, ET LORSQUE\n\
+VOUS SORTEZ, VOUS REVOYEZ LES VERTES\n\
+PRAIRIES DE LA TERRE, VOTRE PLANETE.\n\
+\n\
+VOUS VOUS DEMANDEZ CE QUI S'EST PASSE\n\
+SUR TERRE PENDANT QUE VOUS AVEZ\n\
+COMBATTU LE DEMON. HEUREUSEMENT,\n\
+AUCUN GERME DU MAL N'A FRANCHI\n\
+CETTE PORTE AVEC VOUS...";
 
-    pub const C1TEXT: &str = "VOUS ETES AU PLUS PROFOND DE L'ASTROPORT,\n\
-        INFESTE DE MONSTRES. MAIS QUELQUE\n\
-        CHOSE NE VA PAS. LES MONSTRES\n\
-        N'ONT APPORTE AUCUNE ARME SPATIALE\n\
-        AVEC EUX, ET VOUS N'AVEZ PRIS QUE\n\
-        DES PHOTOS DE LA BASE. VISIBLEMENT,\n\
-        FAIRE FONCTIONNER LE SYSTEME DE SECURITE\n\
-        N'EST PAS DE TOUT REPOS. VOUS DEVEZ\n\
-        RETOURNER A L'ASTROPORT ET Y DETRUIRE\n\
-        LE GENERATEUR. VOUS ETES PRET POUR\n\
-        LA MISSION LA PLUS IMPORTANTE DE VOTRE\n\
-        VIE. BONNE CHANCE FRERE.";
+    pub const C1TEXT: &str = "\
+VOUS ETES AU PLUS PROFOND DE L'ASTROPORT\n\
+INFESTE DE MONSTRES, MAIS QUELQUE CHOSE\n\
+NE VA PAS. ILS ONT APPORTE LEUR PROPRE\n\
+REALITE, ET LA TECHNOLOGIE DE L'ASTROPORT\n\
+EST AFFECTEE PAR LEUR PRESENCE.\n\
+\n\
+DEVANT VOUS, VOUS VOYEZ UN POSTE AVANCE\n\
+DE L'ENFER, UNE ZONE FORTIFIEE. SI VOUS\n\
+POUVEZ PASSER, VOUS POURREZ PENETRER AU\n\
+COEUR DE LA BASE HANTEE ET TROUVER \n\
+L'INTERRUPTEUR DE CONTROLE QUI GARDE LA \n\
+POPULATION DE LA TERRE EN OTAGE.";
 
-    pub const C2TEXT: &str = "VOUS AVEZ REUSSI. IL SEMBLE QUE LES\n\
-        DEMONS N'ONT ENCORE RIEN APPORTE DE\n\
-        LEUR MONDE. C'EST VOUS QUI AVEZ DU\n\
-        FAIRE TOUT LE TRAVAIL.\n\
-        VOUS N'ETES CEPENDANT PAS ENCORE\n\
-        TIRE D'AFFAIRE. CE QUE VOUS DECOUVREZ\n\
-        EN REVENANT A L'ASTROPORT VOUS\n\
-        CHOQUE: IL A ETE PRIS PAR LES DEMONS\n\
-        ET EST REMPLI DE MONTRES PARTOUT.\n\
-        APPAREMMENT, PERSONNE N'EST EN MESURE\n\
-        DE VOUS AIDER. SEUL, VOUS PASSEZ\n\
-        L'ASTROPORT SANGLANT EN REVUE,\n\
-        PREPARANT VOTRE VENGEANCE.";
+    pub const C2TEXT: &str = "\
+VOUS AVEZ GAGNE! VOTRE VICTOIRE A PERMIS\n\
+A L'HUMANITE D'EVACUER LA TERRE ET \n\
+D'ECHAPPER AU CAUCHEMAR. VOUS ETES \n\
+MAINTENANT LE DERNIER HUMAIN A LA SURFACE \n\
+DE LA PLANETE. VOUS ETES ENTOURE DE \n\
+MUTANTS CANNIBALES, D'EXTRATERRESTRES \n\
+CARNIVORES ET D'ESPRITS DU MAL. VOUS \n\
+ATTENDEZ CALMEMENT LA MORT, HEUREUX \n\
+D'AVOIR PU SAUVER VOTRE RACE.\n\
+MAIS UN MESSAGE VOUS PARVIENT SOUDAIN\n\
+DE L'ESPACE: \"NOS CAPTEURS ONT LOCALISE\n\
+LA SOURCE DE L'INVASION EXTRATERRESTRE.\n\
+SI VOUS Y ALLEZ, VOUS POURREZ PEUT-ETRE\n\
+LES ARRETER. LEUR BASE EST SITUEE AU COEUR\n\
+DE VOTRE VILLE NATALE, PRES DE L'ASTROPORT.\n\
+VOUS VOUS RELEVEZ LENTEMENT ET PENIBLEMENT\n\
+ET VOUS REPARTEZ POUR LE FRONT.";
 
-    pub const C3TEXT: &str = "VOUS ETES AU COEUR DE LA CITE DES\n\
-        DEMONS. VOUS N'AVEZ JAMAIS RIEN VU\n\
-        D'AUSSI ABOMINABLE. PARTOUT, DES\n\
-        CADAVRES ET DES DEBRIS HUMAINS\n\
-        JONCHENT LE SOL. HEUREUSEMENT,\n\
-        PERSONNE NE VERRA JAMAIS L'EFFROYABLE\n\
-        ENFER DANS LEQUEL CES CREATURES\n\
-        VIVENT. C'EST PIRE QUE TOUT CE QUE\n\
-        VOUS POUVIEZ IMAGINER.\n\
-        TOUT CELA NE VA PAS RESTER SANS\n\
-        CONSEQUENCES: LES MONSTRES ONT UN\n\
-        PLAN MACHIAVEL ET VOUS ETES\n\
-        PRIS AU PIEGE!";
+    pub const C3TEXT: &str = "\
+VOUS ETES AU COEUR DE LA CITE CORROMPUE,\n\
+ENTOURE PAR LES CADAVRES DE VOS ENNEMIS.\n\
+VOUS NE VOYEZ PAS COMMENT DETRUIRE LA PORTE\n\
+DES CREATURES DE CE COTE. VOUS SERREZ\n\
+LES DENTS ET PLONGEZ DANS L'OUVERTURE.\n\
+\n\
+IL DOIT Y AVOIR UN MOYEN DE LA FERMER\n\
+DE L'AUTRE COTE. VOUS ACCEPTEZ DE\n\
+TRAVERSER L'ENFER POUR LE FAIRE?";
 
-    pub const C4TEXT: &str = "L'HORRIBLE VISION DES PLUS GRANDS\n\
-        MONSTRES EMPOISONNE VOTRE ESPRIT\n\
-        ALORS QUE VOUS ENTREZ DANS LA\n\
-        DERNIERE SALLE. MAIS CES MONSTRES\n\
-        NE PEUVENT RIEN CONTRE VOUS. AVEC\n\
-        CALME ET DETERMINATION, VOUS VIDEZ\n\
-        VOS CHARGEURS SUR QUEL QUE CHOSE\n\
-        QUE MEME LA MORT NE PEUT ARRETER.\n\
-        VOUS AVEZ GAGNER. LA VICTOIRE EST A\n\
-        VOUS. VOUS AVEZ SAUVE LA TERRE.\n\
-        VOUS VOUS DEMANDEZ MAINTENANT CE\n\
-        QU'IL Y A COMME PROGRAMME A LA TELE\n\
-        CE SOIR.";
+    pub const C4TEXT: &str = "\
+LE VISAGE HORRIBLE D'UN DEMON D'UNE\n\
+TAILLE INCROYABLE S'EFFONDRE DEVANT\n\
+VOUS LORSQUE VOUS TIREZ UNE SALVE DE\n\
+ROQUETTES DANS SON CERVEAU. LE MONSTRE\n\
+SE RATATINE, SES MEMBRES DECHIQUETES\n\
+SE REPANDANT SUR DES CENTAINES DE\n\
+KILOMETRES A LA SURFACE DE L'ENFER.\n\
+\n\
+VOUS AVEZ REUSSI. L'INVASION N'AURA.\n\
+PAS LIEU. LA TERRE EST SAUVEE. L'ENFER\n\
+EST ANEANTI. EN VOUS DEMANDANT OU IRONT\n\
+MAINTENANT LES DAMNES, VOUS ESSUYEZ\n\
+VOTRE FRONT COUVERT DE SUEUR ET REPARTEZ\n\
+VERS LA TERRE. SA RECONSTRUCTION SERA\n\
+BEAUCOUP PLUS DROLE QUE SA DESTRUCTION.\n";
 
-    pub const C5TEXT: &str = "FELICITATIONS! VOUS AVEZ TROUVE LE\n\
-        NIVEAU SECRET! IL SEMBLE AVOIR ETE\n\
-        CONSTRUIT PAR LES HUMAINS. CECI\n\
-        POURRAIT PROVENIR DES PROGRAMMES\n\
-        DE L'AGE D'OR.";
+    pub const C5TEXT: &str = "\
+FELICITATIONS! VOUS AVEZ TROUVE LE\n\
+NIVEAU SECRET! IL SEMBLE AVOIR ETE\n\
+CONSTRUIT PAR LES HUMAINS. VOUS VOUS\n\
+DEMANDEZ QUELS PEUVENT ETRE LES\n\
+HABITANTS DE CE COIN PERDU DE L'ENFER.";
 
-    pub const C6TEXT: &str = "FELICITATIONS! VOUS AVEZ DECOUVERT\n\
-        LE SUPER-NIVEAU SECRET! VOUS FERIEZ\n\
-        MIEUX DE FONCER DANS CELUI-CI!";
+    pub const C6TEXT: &str = "\
+FELICITATIONS! VOUS AVEZ DECOUVERT\n\
+LE NIVEAU SUPER SECRET! VOUS FERIEZ\n\
+MIEUX DE FONCER DANS CELUI-LA!\n";
 
     // -----------------------------------------------------------------------
     //  Character cast strings (French)

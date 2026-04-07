@@ -146,7 +146,7 @@ This command performs the following steps automatically:
 The compiled binary is located at:
 
 ```
-target\release\doom-bin.exe
+target\release\doom-rust.exe
 ```
 
 ### Verify the Build
@@ -154,7 +154,7 @@ target\release\doom-bin.exe
 Run the executable with the `--help` flag to confirm it was built correctly:
 
 ```
-target\release\doom-bin.exe --help
+target\release\doom-rust.exe --help
 ```
 
 You should see CLI usage information listing the `--iwad`, `--pwad`, `--warp`,
@@ -175,7 +175,7 @@ cargo run --release -- --iwad "C:\path\to\your\DOOM2.WAD"
 Or run the executable directly:
 
 ```
-target\release\doom-bin.exe --iwad "C:\path\to\your\DOOM2.WAD"
+target\release\doom-rust.exe --iwad "C:\path\to\your\DOOM2.WAD"
 ```
 
 ### Steam DOOM II Example
@@ -350,7 +350,7 @@ cargo build --release
 
   ```
   set SDL_AUDIODRIVER=wasapi
-  target\release\doom-bin.exe --iwad "path\to\IWAD"
+  target\release\doom-rust.exe --iwad "path\to\IWAD"
   ```
 
 ### Window does not appear
@@ -361,7 +361,7 @@ cargo build --release
 
   ```
   set SDL_VIDEO_DRIVER=windows
-  target\release\doom-bin.exe --iwad "path\to\IWAD"
+  target\release\doom-rust.exe --iwad "path\to\IWAD"
   ```
 
 ### Game is sluggish or laggy
@@ -379,7 +379,7 @@ cargo build --release
 ### Antivirus false positive
 
 - Some antivirus programs may flag newly compiled executables. If
-  `doom-bin.exe` is quarantined, add the `target\release\` directory to your
+  `doom-rust.exe` is quarantined, add the `target\release\` directory to your
   antivirus exclusion list.
 
 ---
@@ -429,7 +429,7 @@ The Rust Cargo workspace replaces the original GNU Make build system entirely.
 | **Compiler flags** | `-g -Wall -DNORMALUNIX -DLINUX` | Configured in `Cargo.toml` profiles and `clippy.toml` |
 | **Libraries** | `-lXext -lX11 -lnsl -lm` (manual flags) | Declared in `Cargo.toml`; resolved automatically by Cargo |
 | **Platform deps** | X11, Xext, OSS `/dev/dsp` | SDL2 (compiled from source via `bundled` feature) |
-| **Output** | `linux/linuxxdoom` (ELF binary) | `target/release/doom-bin.exe` (Windows PE binary) |
+| **Output** | `linux/linuxxdoom` (ELF binary) | `target/release/doom-rust.exe` (Windows PE binary) |
 | **Source files** | ~55 `.c` files + ~55 `.h` files in a flat directory | Modular Rust crates with enforced dependency boundaries |
 | **Build time** | Seconds (small C project) | Minutes on first build (SDL2 C compilation); seconds for incremental builds |
 

@@ -353,14 +353,12 @@ impl LumpCache {
     /// cache.change_tag(5, PurgeTag::Static);
     /// ```
     pub fn change_tag(&mut self, lump: usize, tag: PurgeTag) {
-        if !self.cache.contains_key(&lump) {
+        if let Some(entry) = self.cache.get_mut(&lump) {
+            trace!(lump, old_tag = %entry.tag, new_tag = %tag, "changing lump tag");
+            entry.tag = tag;
+        } else {
             trace!(lump, "change_tag called for uncached lump — no-op");
-            return;
         }
-        // Key existence verified by contains_key above.
-        let entry = self.cache.get_mut(&lump).expect("verified by contains_key");
-        trace!(lump, old_tag = %entry.tag, new_tag = %tag, "changing lump tag");
-        entry.tag = tag;
     }
 
     // =========================================================================

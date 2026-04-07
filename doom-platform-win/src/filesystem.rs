@@ -42,7 +42,8 @@
 //! - IR-10: IWAD search paths are now Windows-specific with clear error messages.
 //! - §0.8.2: Deterministic startup path with clear diagnostics.
 
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use tracing::{debug, info, warn};
@@ -290,31 +291,38 @@ pub fn validate_iwad_path(path: &Path) -> bool {
         }
     }
 
-    // Read the first 4 bytes and check for the IWAD magic.
-    match fs::read(path) {
-        Ok(data) => {
-            if data.len() < 4 {
-                debug!(
-                    "File too small to be a valid WAD ({}  bytes): {}",
-                    data.len(),
-                    path.display()
-                );
-                return false;
-            }
-            if &data[..4] == IWAD_MAGIC {
+    // Read only the first 4 bytes to check for the IWAD magic.
+    // This avoids reading the entire file (which can be 14+ MB for DOOM2.WAD)
+    // just to inspect a 4-byte header.
+    let mut file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            debug!("Cannot open file {}: {}", path.display(), e);
+            return false;
+        }
+    };
+
+    let mut magic = [0u8; 4];
+    match file.read_exact(&mut magic) {
+        Ok(()) => {
+            if magic == IWAD_MAGIC {
                 debug!("Valid IWAD header confirmed: {}", path.display());
                 true
             } else {
                 debug!(
                     "File does not have IWAD magic bytes (got {:?}): {}",
-                    &data[..4],
+                    &magic,
                     path.display()
                 );
                 false
             }
         }
         Err(e) => {
-            debug!("Cannot read file {}: {}", path.display(), e);
+            debug!(
+                "File too small or unreadable for WAD magic check ({}): {}",
+                e,
+                path.display()
+            );
             false
         }
     }

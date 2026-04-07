@@ -158,7 +158,8 @@ pub fn point_to_angle(x: Fixed, y: Fixed) -> Angle {
             }
         } else {
             // Fourth quadrant (y < 0)
-            let y = -y;
+            // Use wrapping_neg for C-equivalent behavior on i32::MIN
+            let y = y.wrapping_neg();
             if x > y {
                 // Octant 7 (wrapping: -angle = 0 - angle)
                 Angle(0u32.wrapping_sub(TANTOANGLE[slope_div(y as u32, x as u32) as usize].0))
@@ -169,7 +170,8 @@ pub fn point_to_angle(x: Fixed, y: Fixed) -> Angle {
         }
     } else {
         // x < 0
-        let x = -x;
+        // Use wrapping_neg for C-equivalent behavior on i32::MIN
+        let x = x.wrapping_neg();
         if y >= 0 {
             // Second quadrant
             if x > y {
@@ -181,7 +183,8 @@ pub fn point_to_angle(x: Fixed, y: Fixed) -> Angle {
             }
         } else {
             // Third quadrant (y < 0)
-            let y = -y;
+            // Use wrapping_neg for C-equivalent behavior on i32::MIN
+            let y = y.wrapping_neg();
             if x > y {
                 // Octant 4
                 ANG180 + TANTOANGLE[slope_div(y as u32, x as u32) as usize]

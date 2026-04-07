@@ -298,6 +298,19 @@ impl WadFile {
                 actual_filename, wad_type, header.numlumps
             );
 
+            // Validate infotableofs before using as seek offset.
+            // A negative i32 wraps to a huge u64, causing a seek error
+            // or reading garbage from a malformed WAD file.
+            if header.infotableofs < 0 {
+                return Err(WadError::InvalidWad(actual_filename.to_string()));
+            }
+
+            // Validate numlumps for the same reason — a negative count
+            // would wrap to a huge usize in the loop below.
+            if header.numlumps < 0 {
+                return Err(WadError::InvalidWad(actual_filename.to_string()));
+            }
+
             // Seek to directory and read entries (w_wad.c:200-201)
             // Replaces: lseek(handle, header.infotableofs, SEEK_SET)
             //           read(handle, fileinfo, length)
@@ -454,6 +467,11 @@ impl WadFile {
         let infotableofs = reader
             .read_i32::<LittleEndian>()
             .map_err(|_| WadError::ReloadError(reload_name.clone()))?;
+
+        // Validate infotableofs — a negative offset wraps to a huge u64.
+        if infotableofs < 0 {
+            return Err(WadError::ReloadError(reload_name.clone()));
+        }
 
         // w_wad.c:260: Seek to directory
         reader
@@ -701,6 +719,23 @@ impl WadFile {
         }
 
         let info = &lump_info[lump];
+
+        // Guard against malformed WAD entries with negative size values.
+        // A negative i32 cast to usize wraps to a huge value (~18 EB on 64-bit),
+        // causing an OOM panic.  The original C code never performed this check
+        // because negative sizes do not appear in legitimate WAD files, but we
+        // add it here for robustness against user-provided PWADs.
+        if info.size < 0 {
+            error!(
+                "W_ReadLump: lump {} has negative size ({})",
+                lump, info.size
+            );
+            panic!(
+                "W_ReadLump: lump {} has negative size ({})",
+                lump, info.size
+            );
+        }
+
         let size = info.size as usize;
         let position = info.position as u64;
         let mut buf = vec![0u8; size];

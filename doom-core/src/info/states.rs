@@ -10832,8 +10832,10 @@ impl StateNum {
     /// Returns `None` if the index is out of range (>= NUMSTATES).
     pub fn from_index(index: usize) -> Option<StateNum> {
         if index < NUMSTATES {
-            // SAFETY: All values 0..NUMSTATES are valid StateNum variants
-            // because the enum is #[repr(usize)] with contiguous values.
+            // SAFETY: `StateNum` is `#[repr(usize)]` with contiguous variants
+            // numbered 0..NUMSTATES. The bounds check above guarantees
+            // `index` maps to a valid discriminant. If this enum ever becomes
+            // non-contiguous, this transmute must be replaced with a match.
             Some(unsafe { core::mem::transmute::<usize, StateNum>(index) })
         } else {
             None
