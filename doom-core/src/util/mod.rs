@@ -16,4 +16,5 @@
 //! General-purpose utility functions used across the engine.
 //! Translated from the `m_*.c/h` utility files in `linuxdoom-1.10/`.
 
+pub mod random;
 pub mod swap;
