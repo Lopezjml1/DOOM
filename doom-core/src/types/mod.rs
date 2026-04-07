@@ -24,6 +24,7 @@ pub mod event;
 pub mod fixed;
 pub mod map_data;
 pub mod net;
+pub mod player;
 pub mod tables;
 pub mod thinker;
 pub mod ticcmd;
