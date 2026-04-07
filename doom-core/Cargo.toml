@@ -1,13 +1,115 @@
+# =============================================================================
+# doom-core — Deterministic Game Logic for DOOM 1.10 Rust Port
+# =============================================================================
+#
+# Translated from: linuxdoom-1.10/Makefile (approximately 90 of 110 C source
+# files map to modules within this crate)
+#
+# This is the largest and most critical crate in the DOOM Rust workspace. It
+# contains ALL deterministic game logic, type definitions, data tables, gameplay
+# simulation systems, UI components, video buffer management, utilities, and
+# trait definitions for platform abstraction. Specifically:
+#
+#   types/    — Core type definitions (fixed-point, angles, trig tables,
+#               game mode/state enums, TicCmd, Event, Player, MapObject,
+#               Thinker, map geometry, network structures)
+#   info/     — Massive data tables (state machine, sprite names, mobjinfo,
+#               sound/music definitions)
+#   game/     — Top-level game flow (D_DoomMain, D_DoomLoop, G_Game,
+#               network tic sync, localized strings)
+#   play/     — Gameplay simulation (map setup, thinker tick, mobj physics,
+#               movement/collision, player input, weapons, enemy AI,
+#               line-of-sight, map specials, doors/floors/ceilings/lifts,
+#               switches, teleport, save/load)
+#   ui/       — Presentation layer (menu, HUD, status bar, intermission,
+#               automap, finale, screen wipe)
+#   video/    — Video buffer management (5 screen buffers, patch/block
+#               drawing, gamma correction)
+#   util/     — Utilities (command-line args, bounding box, cheat codes,
+#               file I/O, config, deterministic PRNG, endian swap)
+#   traits/   — Platform abstraction traits (PlatformHost, Renderer,
+#               AudioBackend, WadProvider re-export)
+#
+# This crate has NO dependency on platform-specific code (no SDL2). It depends
+# only on doom-wad for WAD file access and several utility crates from
+# crates.io. All platform interaction goes through trait definitions in
+# src/traits/, enabling future backend substitution without modifying core
+# game logic.
+#
+# Original C build (linuxdoom-1.10/Makefile) compiled with:
+#   CC     = gcc
+#   CFLAGS = -g -Wall -DNORMALUNIX -DLINUX
+#   LIBS   = -lXext -lX11 -lnsl -lm
+#
+# The Rust equivalent uses Cargo with no platform-specific link flags in this
+# crate. Platform dependencies (SDL2, Windows APIs) are isolated in the
+# doom-platform-win crate.
+#
+# Key engine constants preserved from the original source:
+#   VERSION      = 110       (doomdef.h)
+#   SCREENWIDTH  = 320       (doomdef.h)
+#   SCREENHEIGHT = 200       (doomdef.h)
+#   TICRATE      = 35        (doomdef.h)
+#   MAXPLAYERS   = 4         (doomdef.h)
+#   FRACBITS     = 16        (m_fixed.h)
+#   FRACUNIT     = 65536     (m_fixed.h)
+# =============================================================================
+
 [package]
 name = "doom-core"
-edition.workspace = true
 version.workspace = true
+edition.workspace = true
 license.workspace = true
-description = "Deterministic game logic for DOOM Rust port"
+rust-version.workspace = true
+description = "Deterministic game logic for DOOM 1.10 Rust port"
+
+# =============================================================================
+# Dependencies — per AAP §0.6.2
+# =============================================================================
+#
+# CRITICAL CONSTRAINTS (AAP §0.4.1, §0.4.3):
+#   - NO sdl2 dependency — this crate MUST remain platform-independent
+#   - NO doom-platform-win dependency — platform code lives in its own crate
+#   - NO doom-render-soft dependency — the renderer depends on doom-core, not
+#     the reverse
+#   - NO doom-bin dependency — the binary crate depends on doom-core, not the
+#     reverse
+#   - NO clap dependency — CLI parsing is in doom-bin only
+#
+# Dependency graph: doom-core depends on doom-wad ONLY (among doom-* crates).
+# =============================================================================
 
 [dependencies]
+# Path dependency to sibling crate. Provides WAD file parsing, lump access, and
+# the WadProvider trait. doom-core uses this for loading map data, textures,
+# flats, sprites, sounds, and all game resources from IWAD/PWAD files.
+# Translates the w_wad.h interface: W_CheckNumForName, W_GetNumForName,
+# W_LumpLength, W_ReadLump, W_CacheLumpNum, W_CacheLumpName.
 doom-wad = { path = "../doom-wad" }
+
+# Type-safe bitflag types for mobj flags (MF_SOLID, MF_SHOOTABLE, MF_NOSECTOR,
+# MF_NOBLOCKMAP, MF_AMBUSH, etc.), linedef flags (ML_BLOCKING, ML_TWOSIDED,
+# ML_DONTPEGTOP, ML_DONTPEGBOTTOM, etc.), and sector properties. The original
+# C code uses #define constants with bitwise OR; bitflags provides type-safe
+# Rust equivalents via the bitflags! macro.
 bitflags = { workspace = true }
+
+# Little-endian byte reading for data deserialization. Used when loading map
+# geometry (vertexes, linedefs, sidedefs, sectors, segs, subsectors, nodes)
+# from WAD lumps. All integer values in WAD/map data are stored in little-endian
+# byte order. Replaces the LONG() / SHORT() endian macros from m_swap.h that
+# were used throughout the original C codebase.
 byteorder = { workspace = true }
+
+# Ergonomic custom error type derivation via #[derive(Error)]. Replaces the
+# I_Error() fatal error calls in the original C code with proper Rust
+# Result/Error types that integrate with the ? operator for error propagation.
+# Used across all doom-core modules for structured error handling.
 thiserror = { workspace = true }
+
+# Structured diagnostic logging framework. Replaces printf() and
+# fprintf(stderr, ...) calls throughout the original C code with structured
+# tracing events: tracing::info!(), tracing::warn!(), tracing::error!(),
+# tracing::debug!(). Output filtering is controlled via the RUST_LOG
+# environment variable (configured by tracing-subscriber in doom-bin).
 tracing = { workspace = true }
