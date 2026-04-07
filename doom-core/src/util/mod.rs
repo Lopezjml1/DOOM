@@ -19,5 +19,6 @@
 pub mod argv;
 pub mod bbox;
 pub mod cheat;
+pub mod misc;
 pub mod random;
 pub mod swap;
