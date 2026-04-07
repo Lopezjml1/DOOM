@@ -560,13 +560,13 @@ mod tests {
     fn get_config_dir_returns_path() {
         let dir = get_config_dir();
         // The directory should either exist or have been created.
-        assert!(dir.exists() || dir == PathBuf::from("."));
+        assert!(dir.exists() || dir == std::path::Path::new("."));
     }
 
     #[test]
     fn get_save_dir_returns_path() {
         let dir = get_save_dir();
-        assert!(dir.exists() || dir == PathBuf::from("."));
+        assert!(dir.exists() || dir == std::path::Path::new("."));
     }
 
     #[test]
@@ -598,7 +598,7 @@ mod tests {
     fn iwad_names_not_empty() {
         assert!(!IWAD_NAMES.is_empty());
         // Verify at least the core DOOM IWADs are present.
-        let names: Vec<&str> = IWAD_NAMES.iter().copied().collect();
+        let names: Vec<&str> = IWAD_NAMES.to_vec();
         assert!(names.contains(&"doom2.wad") || names.contains(&"DOOM2.WAD"));
         assert!(names.contains(&"doom.wad") || names.contains(&"DOOM.WAD"));
     }

@@ -28,5 +28,6 @@
 //! as subsequent implementation phases are completed.
 
 pub mod filesystem;
+pub mod timer;
 pub mod video;
 pub mod window;
