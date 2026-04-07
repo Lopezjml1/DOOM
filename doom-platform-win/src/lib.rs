@@ -132,6 +132,13 @@ pub struct SdlPlatform {
     /// the game loop's event dispatcher (`D_ProcessEvents`).
     event_queue: Vec<Event>,
 
+    /// Copy of the most recent screen buffer passed to `finish_update()`.
+    /// Used by `read_screen()` to delegate to [`VideoOutput::read_screen()`]
+    /// without requiring the caller to supply the screen data again.
+    /// This matches the original `I_ReadScreen()` behavior where the platform
+    /// layer had direct access to `screens[0]`.
+    last_screen: Vec<u8>,
+
     /// Window scale factor (default 3×).  Used when creating the
     /// SDL2 window in `init_graphics()`.
     window_scale: Option<u32>,
@@ -169,6 +176,7 @@ impl SdlPlatform {
             timer,
             input_state: InputState::new(),
             event_queue: Vec::with_capacity(64),
+            last_screen: vec![0u8; SCREEN_SIZE],
             window_scale,
         })
     }
@@ -205,6 +213,46 @@ impl SdlPlatform {
     /// have been initialized.
     pub fn window_manager_mut(&mut self) -> Option<&mut WindowManager> {
         self.window_manager.as_mut()
+    }
+
+    /// Create an audio backend instance using the SDL2 audio subsystem.
+    ///
+    /// Returns a standalone [`SdlAudioBackend`] that implements
+    /// [`doom_core::traits::AudioBackend`].  The audio backend is **not**
+    /// owned by `SdlPlatform` — it is managed separately by the game
+    /// loop (typically in `doom-bin`).  This separation matches the
+    /// original architecture where `I_InitSound()` and `I_InitMusic()`
+    /// were called independently from `I_InitGraphics()`.
+    ///
+    /// Internally, this method obtains the SDL2 `AudioSubsystem` from
+    /// the owned `Sdl` context and passes it to [`SdlAudioBackend::new()`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if the SDL2 audio subsystem cannot be
+    /// initialized (e.g., no audio device available, SDL2 audio init
+    /// failure).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use doom_platform_win::SdlPlatform;
+    ///
+    /// let platform = SdlPlatform::new(None).expect("SDL2 init failed");
+    /// let audio = platform.create_audio_backend().expect("Audio init failed");
+    /// ```
+    pub fn create_audio_backend(&self) -> Result<SdlAudioBackend, String> {
+        let sdl = self
+            .sdl_context
+            .as_ref()
+            .ok_or_else(|| "create_audio_backend: SDL2 context not available".to_string())?;
+
+        let audio_subsystem = sdl.audio().map_err(|e| {
+            format!("create_audio_backend: Failed to initialize SDL2 audio subsystem: {e}")
+        })?;
+
+        info!("Audio subsystem initialized, creating SdlAudioBackend");
+        Ok(SdlAudioBackend::new(audio_subsystem))
     }
 }
 
@@ -353,8 +401,15 @@ impl PlatformHost for SdlPlatform {
     /// palettized 320×200 framebuffer to ARGB8888 and presents it via
     /// the SDL2 canvas.
     ///
+    /// Also stores a copy of the screen buffer for use by
+    /// [`read_screen()`](PlatformHost::read_screen).
+    ///
     /// If graphics have not been initialized, the call is silently ignored.
     fn finish_update(&mut self, screen: &[u8]) {
+        // Store the screen data for later use by read_screen().
+        let copy_len = SCREEN_SIZE.min(screen.len());
+        self.last_screen[..copy_len].copy_from_slice(&screen[..copy_len]);
+
         if let Some(ref mut vo) = self.video_output {
             vo.finish_update(screen);
         } else {
@@ -380,35 +435,30 @@ impl PlatformHost for SdlPlatform {
     /// Read back the current screen contents.
     ///
     /// Equivalent of `I_ReadScreen()` from `i_video.c:527–530`.
+    /// Delegates to [`VideoOutput::read_screen()`] using the last screen
+    /// buffer stored during [`finish_update()`](PlatformHost::finish_update).
     ///
-    /// **Note**: The original `I_ReadScreen` copies from the internal
-    /// `screens[0]` buffer.  In the Rust architecture, the screen buffer
-    /// is owned by `doom-core`'s `VideoState`, not by the platform layer.
-    /// This implementation zero-fills the buffer because the platform
-    /// layer does not have access to the game's screen memory.  Game code
-    /// should read `VideoState::screens[0]` directly for screen capture.
+    /// If graphics have not been initialized, copies from the internal
+    /// `last_screen` buffer directly.
     fn read_screen(&self, buffer: &mut [u8]) {
-        // The original I_ReadScreen copies screens[0] into the provided
-        // buffer.  Since the platform layer does not own the game's
-        // screen buffer (it lives in doom-core's VideoState), we
-        // zero-fill as the correct safe default.  The game code reads
-        // its own screens[0] directly rather than calling I_ReadScreen.
-        let len = SCREEN_SIZE.min(buffer.len());
-        buffer[..len].fill(0);
-        debug!(
-            "read_screen: zero-filled {} bytes (screen data owned by VideoState)",
-            len
-        );
+        if let Some(ref vo) = self.video_output {
+            // Delegate to VideoOutput which copies the palettized screen data.
+            vo.read_screen(&self.last_screen, buffer);
+        } else {
+            // Fallback: copy directly from stored screen buffer.
+            let len = SCREEN_SIZE.min(buffer.len()).min(self.last_screen.len());
+            buffer[..len].copy_from_slice(&self.last_screen[..len]);
+        }
     }
 
     /// Return a default (empty) tic command.
     ///
-    /// Equivalent of `I_BaseTiccmd()` from `i_system.c`.
+    /// Equivalent of `I_BaseTiccmd()` from `i_system.c:64–68`.
     /// Returns a zeroed [`TicCmd`] — the game loop modifies it with
     /// input from the event queue.
     #[inline]
     fn base_ticcmd(&self) -> TicCmd {
-        TicCmd::default()
+        TicCmd::new()
     }
 
     /// Perform a clean exit from the application.
