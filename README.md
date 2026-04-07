@@ -68,8 +68,10 @@ graph TD
     A[doom-bin] -->|depends on| B[doom-core]
     A -->|depends on| C[doom-platform-win]
     A -->|depends on| D[doom-wad]
+    A -->|depends on| E[doom-render-soft]
     B -->|depends on| D
-    B -->|depends on| E[doom-render-soft]
+    E -->|depends on| B
+    E -->|depends on| D
     C -->|implements| F[PlatformHost trait]
     C -->|implements| G[AudioBackend trait]
     E -->|implements| H[Renderer trait]
