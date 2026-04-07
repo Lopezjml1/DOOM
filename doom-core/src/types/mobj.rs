@@ -992,18 +992,14 @@ mod tests {
 
     #[test]
     fn test_map_object_field_assignment() {
-        let mut mobj = MapObject::default();
-
-        // Set position
-        mobj.x = Fixed::new(100 << 16);
-        mobj.y = Fixed::new(200 << 16);
-        mobj.z = Fixed::new(0);
-
-        // Set flags (typical Imp flags)
-        mobj.flags = MobjFlags::MF_SOLID | MobjFlags::MF_SHOOTABLE | MobjFlags::MF_COUNTKILL;
-
-        // Set health
-        mobj.health = 60;
+        let mobj = MapObject {
+            x: Fixed::new(100 << 16),
+            y: Fixed::new(200 << 16),
+            z: Fixed::new(0),
+            flags: MobjFlags::MF_SOLID | MobjFlags::MF_SHOOTABLE | MobjFlags::MF_COUNTKILL,
+            health: 60,
+            ..Default::default()
+        };
 
         // Verify
         assert_eq!(mobj.x.raw(), 100 << 16);
@@ -1016,10 +1012,12 @@ mod tests {
 
     #[test]
     fn test_map_object_clone() {
-        let mut mobj = MapObject::default();
-        mobj.x = Fixed::new(42 << 16);
-        mobj.health = 100;
-        mobj.flags = MobjFlags::MF_SOLID;
+        let mobj = MapObject {
+            x: Fixed::new(42 << 16),
+            health: 100,
+            flags: MobjFlags::MF_SOLID,
+            ..Default::default()
+        };
 
         let cloned = mobj.clone();
         assert_eq!(cloned.x, mobj.x);
