@@ -23,6 +23,7 @@ pub mod doomtype;
 pub mod event;
 pub mod fixed;
 pub mod map_data;
+pub mod mobj;
 pub mod net;
 pub mod player;
 pub mod tables;
