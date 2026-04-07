@@ -1,11 +1,60 @@
+# =============================================================================
+# doom-wad — WAD/IWAD File Format Parser and Lump Cache
+# =============================================================================
+#
+# Translated from: linuxdoom-1.10/w_wad.c, linuxdoom-1.10/w_wad.h
+#
+# This is the most foundational crate in the DOOM Rust workspace. It provides:
+#   - WAD file format parsing (IWAD/PWAD identification via 4-byte magic)
+#   - Lump directory construction from WAD headers (wadinfo_t, filelump_t)
+#   - Lump name lookup with 8-byte null-padded case-insensitive matching
+#   - Cached lump access with tag-based eviction (replacing z_zone.c cache)
+#   - Multi-WAD file support (up to MAXWADFILES = 20)
+#
+# This crate has NO dependencies on any other doom-* crate and NO platform-
+# specific dependencies. It is intentionally kept minimal and portable so that
+# doom-core, doom-render-soft, and doom-platform-win can all depend on it
+# without creating circular dependencies.
+#
+# Original C interface (w_wad.h) provided:
+#   W_InitMultipleFiles, W_Reload, W_CheckNumForName, W_GetNumForName,
+#   W_LumpLength, W_ReadLump, W_CacheLumpNum, W_CacheLumpName
+#
+# All integer values in WAD files are stored in little-endian byte order.
+# The byteorder crate replaces the LONG()/SHORT() macros from m_swap.h.
+# =============================================================================
+
 [package]
 name = "doom-wad"
-edition.workspace = true
 version.workspace = true
+edition.workspace = true
 license.workspace = true
-description = "WAD/IWAD file parsing library for DOOM Rust port"
+rust-version.workspace = true
+description = "WAD/IWAD file format parser and lump cache for DOOM engine"
+
+# =============================================================================
+# Dependencies — per AAP §0.6.2
+# =============================================================================
+#
+# CRITICAL: This crate must remain platform-independent.
+#   - NO sdl2 dependency
+#   - NO doom-core dependency
+#   - NO doom-platform-win dependency
+# =============================================================================
 
 [dependencies]
+# Little-endian byte reading for WAD file parsing and data deserialization.
+# Replaces the LONG() / SHORT() macros from m_swap.h that were used in w_wad.c
+# to convert WAD header fields (infotableofs, numlumps, filepos, size) from
+# on-disk little-endian format to native host byte order.
 byteorder = { workspace = true }
+
+# Ergonomic custom error type derivation via #[derive(Error)] for WAD parsing
+# errors. Replaces the I_Error() calls in w_wad.c with structured, typed error
+# variants that integrate with Rust's Result/? error propagation.
 thiserror = { workspace = true }
+
+# Structured diagnostic logging framework. Replaces printf() calls in w_wad.c
+# (e.g., "W_InitFiles: %s not found" diagnostic messages) with tracing events
+# that can be filtered via the RUST_LOG environment variable.
 tracing = { workspace = true }
