@@ -11,11 +11,12 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
 
-//! DOOM core game logic library.
+//! Platform abstraction traits for DOOM engine.
 //!
-//! Contains deterministic gameplay, types, info tables, UI, and utilities.
-//! This crate implements the platform-independent core of the DOOM engine,
-//! translated from the original C source in linuxdoom-1.10/.
+//! Defines the trait interfaces that decouple `doom-core` game logic from
+//! platform-specific implementations. The `doom-platform-win` and
+//! `doom-render-soft` crates provide concrete implementations.
 
-pub mod traits;
-pub mod types;
+pub mod audio;
+
+pub use audio::AudioBackend;
