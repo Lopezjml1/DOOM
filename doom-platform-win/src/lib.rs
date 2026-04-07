@@ -29,6 +29,7 @@
 
 pub mod audio;
 pub mod filesystem;
+pub mod input;
 pub mod timer;
 pub mod video;
 pub mod window;
