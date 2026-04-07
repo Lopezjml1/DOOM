@@ -11,10 +11,10 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
 
-//! DOOM core game logic library.
+//! Core type definitions for the DOOM engine.
 //!
-//! Contains deterministic gameplay, types, info tables, UI, and utilities.
-//! This crate implements the platform-independent core of the DOOM engine,
-//! translated from the original C source in linuxdoom-1.10/.
+//! This module contains all fundamental types used throughout the engine:
+//! fixed-point arithmetic, angles, trigonometric tables, game definitions,
+//! player state, map objects, and network structures.
 
-pub mod types;
+pub mod fixed;
