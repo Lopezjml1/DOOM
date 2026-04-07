@@ -22,5 +22,6 @@ pub mod doomtype;
 pub mod event;
 pub mod fixed;
 pub mod net;
+pub mod tables;
 pub mod thinker;
 pub mod ticcmd;
