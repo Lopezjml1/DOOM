@@ -17,7 +17,11 @@
 //! the status bar, HUD, menus, intermission screens, automap, finale,
 //! and screen wipe transitions.
 
+pub mod hud_lib;
 pub mod statusbar_lib;
+
+// Convenience re-exports for HUD widget types.
+pub use hud_lib::{HuInputText, HuScrollText, HuTextLine};
 
 // Convenience re-exports for status bar widget types.
 pub use statusbar_lib::{StBinIcon, StMultIcon, StNumber, StPercent};
