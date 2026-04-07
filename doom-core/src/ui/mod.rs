@@ -18,6 +18,7 @@
 //! and screen wipe transitions.
 
 pub mod hud_lib;
+pub mod intermission;
 pub mod statusbar_lib;
 pub mod wipe;
 
