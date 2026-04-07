@@ -1,3 +1,56 @@
-# Cargo build configuration for DOOM Rust port
-# On Windows, the default target is x86_64-pc-windows-msvc
-# On Linux (CI/dev), the native target is used automatically
+# =============================================================================
+# Cargo Build Configuration — DOOM Rust / Windows 11
+# =============================================================================
+#
+# Replaces: linuxdoom-1.10/Makefile
+#
+# The original Makefile used:
+#   CC      = gcc
+#   CFLAGS  = -g -Wall -DNORMALUNIX -DLINUX
+#   LDFLAGS = -L/usr/X11R6/lib
+#   LIBS    = -lXext -lX11 -lnsl -lm
+#   Target  = linux/linuxxdoom (ELF binary)
+#
+# This configuration replaces those settings with:
+#   Compiler  = MSVC (cl.exe) via Rust's x86_64-pc-windows-msvc target
+#   Linker    = link.exe (from Visual Studio Build Tools 2022)
+#   Platform  = SDL2 (compiled from source via "bundled" feature)
+#   Output    = Windows PE executable (doom-bin.exe)
+#
+# Prerequisites:
+#   - Rust stable toolchain (rustup-init.exe, default stable-x86_64-pc-windows-msvc)
+#   - Visual Studio Build Tools 2022 with "Desktop development with C++" workload
+#
+# See docs/BUILDING.md for complete Windows 11 setup instructions.
+# =============================================================================
+
+[build]
+# Default compilation target: Windows 11 x86_64 with MSVC toolchain.
+# All cargo commands (build, test, clippy, check) will target this platform
+# without requiring --target flags on every invocation.
+target = "x86_64-pc-windows-msvc"
+
+[target.x86_64-pc-windows-msvc]
+# Statically link the Microsoft Visual C++ runtime (UCRT + vcruntime).
+# This makes the resulting executable self-contained — it can run on any
+# Windows 11 machine without requiring the Visual C++ Redistributable
+# to be pre-installed.
+#
+# Note: +crt-static is the default for MSVC targets in Rust, but we set
+# it explicitly here for clarity and to prevent accidental override.
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# =============================================================================
+# SDL2 Bundled Build Notes
+# =============================================================================
+# The doom-platform-win crate depends on sdl2 with the "bundled" feature,
+# which compiles SDL2 from C source during `cargo build`. The sdl2-sys
+# build script automatically:
+#   - Locates the MSVC compiler (cl.exe) via Visual Studio Build Tools
+#   - Compiles SDL2 from the vendored C sources
+#   - Links required Windows system libraries (user32, gdi32, winmm, imm32,
+#     ole32, oleaut32, version, uuid, shell32, advapi32, setupapi)
+#
+# No manual SDL2_LIB_DIR or SDL2_INCLUDE_DIR environment variables are
+# needed when using the bundled feature.
+# =============================================================================
