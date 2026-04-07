@@ -8,20 +8,16 @@
 //
 // This program is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
-//! DOOM core game logic library.
+//! UI / presentation subsystem modules.
 //!
-//! Contains deterministic gameplay, types, info tables, UI, and utilities.
-//! This crate implements the platform-independent core of the DOOM engine,
-//! translated from the original C source in linuxdoom-1.10/.
+//! Contains all user-interface elements for the DOOM engine including
+//! the status bar, HUD, menus, intermission screens, automap, finale,
+//! and screen wipe transitions.
 
-pub mod game;
-pub mod info;
-pub mod play;
-pub mod traits;
-pub mod types;
-pub mod ui;
-pub mod util;
-pub mod video;
+pub mod statusbar_lib;
+
+// Convenience re-exports for status bar widget types.
+pub use statusbar_lib::{StBinIcon, StMultIcon, StNumber, StPercent};
