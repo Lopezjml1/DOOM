@@ -1,0 +1,96 @@
+# =============================================================================
+# DOOM Rust — Continuous Integration Pipeline (Windows 11)
+# =============================================================================
+#
+# Replaces: linuxdoom-1.10/Makefile (GNU Make build system)
+#
+# The original Makefile compiled ~55 C files using GCC with:
+#   CC     = gcc
+#   CFLAGS = -g -Wall -DNORMALUNIX -DLINUX
+#   LIBS   = -lXext -lX11 -lnsl -lm
+# and linked them into a single `linuxxdoom` ELF binary on Linux.
+#
+# This GitHub Actions workflow replaces that build with a modern Cargo-based
+# CI pipeline targeting Windows 11. It validates the entire 5-crate workspace
+# (doom-wad, doom-core, doom-render-soft, doom-platform-win, doom-bin) through
+# four mandatory checks:
+#
+#   1. cargo fmt --check              — Code formatting consistency
+#   2. cargo clippy -- -D warnings    — Lint-free codebase (warnings = errors)
+#   3. cargo test --workspace         — All unit and integration tests pass
+#   4. cargo build --release          — Release build produces a valid PE exe
+#
+# The windows-latest runner includes Visual Studio Build Tools with the C++
+# workload pre-installed, which is required by the SDL2 `bundled` Cargo feature
+# (compiles SDL2 from C source during cargo build). No additional system
+# libraries or manual configuration is needed.
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Build & Test (Windows)
+    runs-on: windows-latest
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 0: Check out the repository
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # Step 1: Install the Rust stable toolchain with clippy and rustfmt
+      # -----------------------------------------------------------------------
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      # -----------------------------------------------------------------------
+      # Step 2: Cache Cargo registry, git checkouts, and build artifacts
+      # -----------------------------------------------------------------------
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      # -----------------------------------------------------------------------
+      # Step 3: Verify code formatting consistency
+      # Fails CI if any file is not properly formatted per rustfmt rules.
+      # -----------------------------------------------------------------------
+      - name: Check formatting
+        run: cargo fmt --check
+
+      # -----------------------------------------------------------------------
+      # Step 4: Run Clippy lints with warnings treated as errors
+      # The -D warnings flag ensures zero tolerance for lint warnings.
+      # -----------------------------------------------------------------------
+      - name: Run Clippy lints
+        run: cargo clippy --all-targets -- -D warnings
+
+      # -----------------------------------------------------------------------
+      # Step 5: Execute all unit and integration tests across the workspace
+      # Covers all 5 crates: doom-wad, doom-core, doom-render-soft,
+      # doom-platform-win, and doom-bin.
+      # -----------------------------------------------------------------------
+      - name: Run tests
+        run: cargo test --workspace
+
+      # -----------------------------------------------------------------------
+      # Step 6: Build the release binary
+      # Verifies the release build produces a valid Windows PE executable.
+      # The SDL2 bundled feature compiles SDL2 from C source here, which
+      # requires the Visual Studio Build Tools C++ workload (pre-installed
+      # on windows-latest runners).
+      # -----------------------------------------------------------------------
+      - name: Build release
+        run: cargo build --release
