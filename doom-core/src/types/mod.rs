@@ -22,6 +22,7 @@ pub mod doomdef;
 pub mod doomtype;
 pub mod event;
 pub mod fixed;
+pub mod map_data;
 pub mod net;
 pub mod tables;
 pub mod thinker;
