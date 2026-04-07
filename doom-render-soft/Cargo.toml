@@ -1,11 +1,117 @@
+# =============================================================================
+# doom-render-soft — Software Renderer for DOOM 1.10 Rust Port
+# =============================================================================
+#
+# Translated from: linuxdoom-1.10/r_bsp.c, r_data.c, r_draw.c, r_main.c,
+#                  r_plane.c, r_segs.c, r_sky.c, r_things.c
+#
+# Reference headers: r_local.h (umbrella), r_main.h, r_defs.h, r_state.h,
+#                    r_bsp.h, r_data.h, r_draw.h, r_plane.h, r_segs.h,
+#                    r_sky.h, r_things.h
+#
+# This crate implements the complete DOOM software rendering pipeline,
+# faithfully translated from the original id Software C source. It covers:
+#
+#   bsp.rs    — BSP tree traversal for front-to-back subsector rendering
+#               (R_RenderBSPNode, R_Subsector, R_AddLine)
+#   data.rs   — Texture, flat, sprite, and colormap cache loading from WAD
+#               lumps (R_InitTextures, R_InitFlats, R_InitSpriteLumps,
+#               R_InitColormaps)
+#   draw.rs   — Column and span drawing primitives: the inner loops that
+#               write pixels to the framebuffer (R_DrawColumn, R_DrawSpan,
+#               R_DrawFuzzColumn, R_InitBuffer)
+#   main.rs   — Renderer entry point, viewpoint setup, and lighting LUT
+#               initialization (R_RenderPlayerView, R_SetupFrame, R_Init)
+#   plane.rs  — Visplane allocation and floor/ceiling span rendering
+#               (R_FindPlane, R_MakeSpans, R_DrawPlanes)
+#   segs.rs   — Wall segment rendering and texture mapping (R_RenderSegLoop,
+#               R_StoreWallRange)
+#   sky.rs    — Sky texture rendering (R_InitSkyMap)
+#   things.rs — Sprite sorting and masked column compositing (R_DrawMasked,
+#               R_ProjectSprite, R_DrawVisSprite)
+#   defs.rs   — Renderer-internal type definitions and state variables
+#
+# This crate implements the Renderer trait defined in doom-core/src/traits/
+# renderer.rs, providing the render_player_view, init, and set_view_size
+# methods that the game loop calls each frame.
+#
+# The rendering pipeline preserves all original numerical behavior:
+#   - Fixed-point 16.16 arithmetic (FRACBITS=16, FRACUNIT=65536)
+#   - 320x200 native resolution palettized framebuffer
+#   - 16 diminishing lighting levels (LIGHTLEVELS=16)
+#   - 32 colormap LUTs from the COLORMAP WAD lump (NUMCOLORMAPS=32)
+#   - 48-step light scaling (MAXLIGHTSCALE=48)
+#   - 128-step depth-based lighting (MAXLIGHTZ=128)
+#
+# This crate is PLATFORM-INDEPENDENT. It writes pixels to an in-memory
+# framebuffer; the actual display output is handled by doom-platform-win.
+# No SDL2, X11, or any platform-specific code exists in this crate.
+#
+# Original C build (linuxdoom-1.10/Makefile) compiled these as:
+#   $(O)/r_bsp.o $(O)/r_data.o $(O)/r_draw.o $(O)/r_main.o
+#   $(O)/r_plane.o $(O)/r_segs.o $(O)/r_sky.o $(O)/r_things.o
+# =============================================================================
+
 [package]
 name = "doom-render-soft"
-edition.workspace = true
 version.workspace = true
+edition.workspace = true
 license.workspace = true
-description = "Software renderer for DOOM Rust port"
+rust-version.workspace = true
+description = "Software renderer for DOOM 1.10 Rust port — BSP traversal, wall/floor/ceiling/sprite drawing"
+
+# =============================================================================
+# Dependencies — per AAP §0.6.2
+# =============================================================================
+#
+# CRITICAL CONSTRAINTS (AAP §0.4.1, §0.4.3):
+#   - NO sdl2 dependency — this crate is platform-independent; window/video
+#     output is handled by doom-platform-win
+#   - NO doom-platform-win dependency — the platform crate depends on this
+#     crate's output, not the reverse
+#   - NO doom-bin dependency — the binary crate depends on this, not the
+#     reverse
+#   - NO clap dependency — CLI parsing is in doom-bin only
+#   - NO byteorder dependency — byte ordering is handled by doom-wad when
+#     loading lumps; the renderer works with already-parsed data
+#   - NO bitflags dependency — bitflag types are defined in doom-core
+#   - NO thiserror dependency — error handling uses doom-core error types
+#     or panics matching the original I_Error() behavior
+#
+# Dependency graph: doom-render-soft depends on doom-core and doom-wad ONLY
+# (among doom-* crates).
+# =============================================================================
 
 [dependencies]
+# Path dependency to sibling crate. Provides all the type definitions and
+# constants needed by the renderer:
+#   - Types: Fixed, Angle, Player, MapObject, Sector, LineDef, SideDef,
+#     Seg, Subsector, Node, Vertex (from doom-core/src/types/)
+#   - Constants: SCREENWIDTH=320, SCREENHEIGHT=200, FRACBITS=16,
+#     FRACUNIT=65536, TICRATE=35 (from doom-core/src/types/doomdef.rs)
+#   - Trait: Renderer trait (from doom-core/src/traits/renderer.rs) that
+#     this crate implements with render_player_view, init, set_view_size
+#   - Info tables: sprite definitions, state tables, mobjinfo for sprite
+#     rendering (from doom-core/src/info/)
 doom-core = { path = "../doom-core" }
+
+# Path dependency to sibling crate. Provides WAD lump access for loading
+# all rendering resources from IWAD/PWAD files:
+#   - Textures via R_InitTextures (TEXTURE1/TEXTURE2/PNAMES lumps)
+#   - Flats via R_InitFlats (flat lumps between F_START/F_END markers)
+#   - Sprites via R_InitSpriteLumps (S_START/S_END sprite lumps)
+#   - Colormaps via R_InitColormaps (COLORMAP and PLAYPAL lumps)
+#   - WadProvider trait for lump lookup, read, and cache operations
 doom-wad = { path = "../doom-wad" }
+
+# Structured diagnostic logging framework. Replaces printf() and
+# fprintf(stderr, ...) calls in the original C renderer code with structured
+# tracing events. Used for:
+#   - Error messages in R_InitTextures (missing TEXTURE1 lump, bad patch
+#     references)
+#   - Visplane overflow warnings in R_FindPlane
+#   - Initialization diagnostics in R_Init
+#   - Texture cache statistics during level loading
+# Output filtering is controlled via RUST_LOG environment variable
+# (configured by tracing-subscriber in doom-bin).
 tracing = { workspace = true }
