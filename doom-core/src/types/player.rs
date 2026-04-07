@@ -726,7 +726,7 @@ mod tests {
         assert_eq!(p.armortype, 0);
         assert_eq!(p.readyweapon, WeaponType::Fist);
         assert_eq!(p.pendingweapon, WeaponType::Fist);
-        assert_eq!(p.backpack, false);
+        assert!(!p.backpack);
         assert_eq!(p.attackdown, 0);
         assert_eq!(p.usedown, 0);
         assert_eq!(p.cheats, 0);
@@ -741,7 +741,7 @@ mod tests {
         assert_eq!(p.extralight, 0);
         assert_eq!(p.fixedcolormap, 0);
         assert_eq!(p.colormap, 0);
-        assert_eq!(p.didsecret, false);
+        assert!(!p.didsecret);
     }
 
     #[test]
@@ -810,10 +810,12 @@ mod tests {
 
     #[test]
     fn test_player_clone() {
-        let mut p = Player::default();
-        p.health = 100;
-        p.armorpoints = 50;
-        p.readyweapon = WeaponType::Shotgun;
+        let mut p = Player {
+            health: 100,
+            armorpoints: 50,
+            readyweapon: WeaponType::Shotgun,
+            ..Default::default()
+        };
         p.cards[0] = true;
         p.message = Some("Picked up a shotgun.".to_string());
 

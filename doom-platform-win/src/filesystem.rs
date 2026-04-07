@@ -305,7 +305,7 @@ pub fn validate_iwad_path(path: &Path) -> bool {
     let mut magic = [0u8; 4];
     match file.read_exact(&mut magic) {
         Ok(()) => {
-            if magic == IWAD_MAGIC {
+            if magic == *IWAD_MAGIC {
                 debug!("Valid IWAD header confirmed: {}", path.display());
                 true
             } else {

@@ -670,3 +670,536 @@ impl Default for VideoState {
         Self::new()
     }
 }
+
+// =============================================================================
+// Unit Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Screen size constant for readability in tests.
+    const SCREEN_SIZE: usize = (SCREENWIDTH * SCREENHEIGHT) as usize;
+
+    // =========================================================================
+    // Construction and constant tests
+    // =========================================================================
+
+    #[test]
+    fn test_new_allocates_five_screens() {
+        let video = VideoState::new();
+        assert_eq!(video.screens.len(), NUM_SCREENS);
+        for (i, screen) in video.screens.iter().enumerate() {
+            assert_eq!(
+                screen.len(),
+                SCREEN_SIZE,
+                "Screen {} has wrong size: {} (expected {})",
+                i,
+                screen.len(),
+                SCREEN_SIZE
+            );
+        }
+    }
+
+    #[test]
+    fn test_new_screens_are_zeroed() {
+        let video = VideoState::new();
+        for (i, screen) in video.screens.iter().enumerate() {
+            assert!(
+                screen.iter().all(|&b| b == 0),
+                "Screen {} is not zero-initialized",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_new_initial_state() {
+        let video = VideoState::new();
+        assert_eq!(
+            video.dirtybox, [0; 4],
+            "dirtybox should be zero-initialized"
+        );
+        assert_eq!(video.usegamma, 0, "usegamma should default to 0");
+    }
+
+    #[test]
+    fn test_default_matches_new() {
+        let from_new = VideoState::new();
+        let from_default = VideoState::default();
+        assert_eq!(from_new.dirtybox, from_default.dirtybox);
+        assert_eq!(from_new.usegamma, from_default.usegamma);
+        for i in 0..NUM_SCREENS {
+            assert_eq!(from_new.screens[i].len(), from_default.screens[i].len());
+        }
+    }
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(CENTERY, 100, "CENTERY should be SCREENHEIGHT / 2 = 100");
+        assert_eq!(NUM_SCREENS, 5, "NUM_SCREENS should be 5");
+        assert_eq!(SCREENWIDTH, 320);
+        assert_eq!(SCREENHEIGHT, 200);
+    }
+
+    // =========================================================================
+    // Gamma table tests
+    // =========================================================================
+
+    #[test]
+    fn test_gamma_table_dimensions() {
+        assert_eq!(GAMMATABLE.len(), 5, "GAMMATABLE should have 5 levels");
+        for (level, table) in GAMMATABLE.iter().enumerate() {
+            assert_eq!(
+                table.len(),
+                256,
+                "GAMMATABLE level {} should have 256 entries",
+                level
+            );
+        }
+    }
+
+    #[test]
+    fn test_gamma_table_level0_near_identity() {
+        // Level 0 starts at 1 (not 0) and ends at 255
+        assert_eq!(GAMMATABLE[0][0], 1, "Level 0 first entry should be 1");
+        assert_eq!(GAMMATABLE[0][255], 255, "Level 0 last entry should be 255");
+        // Value 128 appears twice at indices 127 and 128 (documented property)
+        assert_eq!(GAMMATABLE[0][127], 128);
+        assert_eq!(GAMMATABLE[0][128], 128);
+    }
+
+    #[test]
+    fn test_gamma_table_level4_most_aggressive() {
+        // Level 4 first value is 16 (documented), last is 255
+        assert_eq!(GAMMATABLE[4][0], 16, "Level 4 first entry should be 16");
+        assert_eq!(GAMMATABLE[4][255], 255, "Level 4 last entry should be 255");
+    }
+
+    #[test]
+    fn test_gamma_table_monotonically_nondecreasing() {
+        for (level, table) in GAMMATABLE.iter().enumerate() {
+            for i in 1..256 {
+                assert!(
+                    table[i] >= table[i - 1],
+                    "GAMMATABLE[{}] not non-decreasing at index {}: {} < {}",
+                    level,
+                    i,
+                    table[i],
+                    table[i - 1]
+                );
+            }
+        }
+    }
+
+    // =========================================================================
+    // Dirty box tests
+    // =========================================================================
+
+    #[test]
+    fn test_clear_dirty_box() {
+        let mut video = VideoState::new();
+        // First set dirty box to some values
+        video.dirtybox = [100, 200, 300, 400];
+        video.clear_dirty_box();
+        // After clearing: BOXTOP=MIN, BOXBOTTOM=MAX, BOXLEFT=MAX, BOXRIGHT=MIN
+        assert_eq!(video.dirtybox[BOXTOP], i32::MIN);
+        assert_eq!(video.dirtybox[BOXBOTTOM], i32::MAX);
+        assert_eq!(video.dirtybox[BOXLEFT], i32::MAX);
+        assert_eq!(video.dirtybox[BOXRIGHT], i32::MIN);
+    }
+
+    #[test]
+    fn test_mark_rect_from_cleared() {
+        let mut video = VideoState::new();
+        video.clear_dirty_box();
+        video.mark_rect(10, 20, 50, 30);
+        // After marking a single rect from cleared state:
+        // BOXLEFT should be min X = 10
+        // BOXRIGHT should be max X = 10 + 50 - 1 = 59
+        // BOXBOTTOM should be min Y = 20
+        // BOXTOP should be max Y = 20 + 30 - 1 = 49
+        assert_eq!(video.dirtybox[BOXLEFT], 10);
+        assert_eq!(video.dirtybox[BOXRIGHT], 59);
+        assert_eq!(video.dirtybox[BOXBOTTOM], 20);
+        assert_eq!(video.dirtybox[BOXTOP], 49);
+    }
+
+    #[test]
+    fn test_mark_rect_expands_dirty_box() {
+        let mut video = VideoState::new();
+        video.clear_dirty_box();
+        video.mark_rect(10, 20, 50, 30);
+        video.mark_rect(5, 40, 100, 10);
+        // Dirty box should encompass both rects
+        assert_eq!(video.dirtybox[BOXLEFT], 5, "BOXLEFT should be min of 10, 5");
+        assert_eq!(
+            video.dirtybox[BOXRIGHT], 104,
+            "BOXRIGHT should be max of 59, 104"
+        );
+        assert_eq!(
+            video.dirtybox[BOXBOTTOM], 20,
+            "BOXBOTTOM should be min of 20, 40"
+        );
+        assert_eq!(video.dirtybox[BOXTOP], 49, "BOXTOP should be max of 49, 49");
+    }
+
+    // =========================================================================
+    // draw_block / get_block tests
+    // =========================================================================
+
+    #[test]
+    fn test_draw_block_writes_pixels() {
+        let mut video = VideoState::new();
+        let src = vec![0xAA; 10 * 5]; // 10x5 block filled with 0xAA
+        video.draw_block(20, 30, 0, 10, 5, &src);
+
+        let sw = SCREENWIDTH as usize;
+        for row in 0..5usize {
+            for col in 0..10usize {
+                let idx = (30 + row) * sw + (20 + col);
+                assert_eq!(
+                    video.screens[0][idx],
+                    0xAA,
+                    "Pixel at ({}, {}) should be 0xAA",
+                    20 + col,
+                    30 + row
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_draw_block_does_not_overflow() {
+        let mut video = VideoState::new();
+        let src = vec![0xBB; 4 * 3];
+        video.draw_block(50, 60, 2, 4, 3, &src);
+
+        // Verify pixels outside the block are still zero
+        let sw = SCREENWIDTH as usize;
+        // Pixel just left of block
+        assert_eq!(video.screens[2][60 * sw + 49], 0);
+        // Pixel just right of block
+        assert_eq!(video.screens[2][60 * sw + 54], 0);
+        // Pixel just above block
+        assert_eq!(video.screens[2][59 * sw + 50], 0);
+        // Pixel just below block
+        assert_eq!(video.screens[2][63 * sw + 50], 0);
+    }
+
+    #[test]
+    fn test_draw_block_marks_dirty() {
+        let mut video = VideoState::new();
+        video.clear_dirty_box();
+        let src = vec![0; 8 * 4];
+        video.draw_block(100, 50, 0, 8, 4, &src);
+        // Dirty box should encompass the drawn block
+        assert!(video.dirtybox[BOXLEFT] <= 100);
+        assert!(video.dirtybox[BOXRIGHT] >= 107);
+        assert!(video.dirtybox[BOXBOTTOM] <= 50);
+        assert!(video.dirtybox[BOXTOP] >= 53);
+    }
+
+    #[test]
+    fn test_get_block_reads_pixels() {
+        let mut video = VideoState::new();
+        // Write known data directly into screen buffer
+        let sw = SCREENWIDTH as usize;
+        for row in 0..3usize {
+            for col in 0..4usize {
+                video.screens[1][(10 + row) * sw + (20 + col)] = (row * 4 + col) as u8;
+            }
+        }
+
+        let mut dest = vec![0u8; 4 * 3];
+        video.get_block(20, 10, 1, 4, 3, &mut dest);
+
+        for row in 0..3usize {
+            for col in 0..4usize {
+                assert_eq!(
+                    dest[row * 4 + col],
+                    (row * 4 + col) as u8,
+                    "get_block pixel at ({}, {}) mismatch",
+                    col,
+                    row
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_draw_block_get_block_roundtrip() {
+        let mut video = VideoState::new();
+        let original: Vec<u8> = (0..20u8).collect(); // 5x4 block with values 0..19
+        video.draw_block(50, 80, 3, 5, 4, &original);
+
+        let mut readback = vec![0u8; 20];
+        video.get_block(50, 80, 3, 5, 4, &mut readback);
+
+        assert_eq!(
+            original, readback,
+            "Round-trip draw_block → get_block mismatch"
+        );
+    }
+
+    // =========================================================================
+    // copy_rect tests
+    // =========================================================================
+
+    #[test]
+    fn test_copy_rect_between_different_screens() {
+        let mut video = VideoState::new();
+        // Fill a small area of screen 0 with known data
+        let sw = SCREENWIDTH as usize;
+        for row in 0..3usize {
+            for col in 0..4usize {
+                video.screens[0][row * sw + col] = 0xDD;
+            }
+        }
+
+        // Copy from screen 0 to screen 1
+        video.copy_rect(0, 0, 0, 4, 3, 10, 10, 1);
+
+        // Verify destination
+        for row in 0..3usize {
+            for col in 0..4usize {
+                let idx = (10 + row) * sw + (10 + col);
+                assert_eq!(
+                    video.screens[1][idx],
+                    0xDD,
+                    "Copied pixel at dest ({}, {}) should be 0xDD",
+                    10 + col,
+                    10 + row
+                );
+            }
+        }
+
+        // Verify source is unchanged
+        for row in 0..3usize {
+            for col in 0..4usize {
+                assert_eq!(
+                    video.screens[0][row * sw + col],
+                    0xDD,
+                    "Source pixel should be preserved"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_copy_rect_same_screen() {
+        let mut video = VideoState::new();
+        let sw = SCREENWIDTH as usize;
+        // Fill (0,0)-(3,2) on screen 0
+        for row in 0..3usize {
+            for col in 0..4usize {
+                video.screens[0][row * sw + col] = 0xEE;
+            }
+        }
+
+        // Copy within screen 0 to non-overlapping region
+        video.copy_rect(0, 0, 0, 4, 3, 100, 100, 0);
+
+        // Verify destination
+        for row in 0..3usize {
+            for col in 0..4usize {
+                let idx = (100 + row) * sw + (100 + col);
+                assert_eq!(video.screens[0][idx], 0xEE);
+            }
+        }
+    }
+
+    #[test]
+    fn test_copy_rect_marks_dirty() {
+        let mut video = VideoState::new();
+        video.clear_dirty_box();
+        video.copy_rect(0, 0, 0, 10, 10, 50, 60, 1);
+        // Dirty box should cover the destination rectangle
+        assert!(video.dirtybox[BOXLEFT] <= 50);
+        assert!(video.dirtybox[BOXRIGHT] >= 59);
+        assert!(video.dirtybox[BOXBOTTOM] <= 60);
+        assert!(video.dirtybox[BOXTOP] >= 69);
+    }
+
+    // =========================================================================
+    // draw_patch tests (column-post format)
+    // =========================================================================
+
+    /// Build a minimal valid 2×2 patch with known pixel values.
+    ///
+    /// Patch format:
+    /// - Header: width(i16), height(i16), leftoffset(i16), topoffset(i16)
+    /// - Column offset table: width × i32
+    /// - Column data: [topdelta, length, pad, pixels..., pad, 0xFF sentinel]
+    fn build_test_patch_2x2() -> Vec<u8> {
+        let mut data = Vec::new();
+        // Header: width=2, height=2, leftoffset=0, topoffset=0
+        data.extend_from_slice(&2i16.to_le_bytes()); // width
+        data.extend_from_slice(&2i16.to_le_bytes()); // height
+        data.extend_from_slice(&0i16.to_le_bytes()); // leftoffset
+        data.extend_from_slice(&0i16.to_le_bytes()); // topoffset
+
+        // Column offset table (2 entries, 4 bytes each)
+        // Data starts after header (8) + column table (8) = offset 16
+        let col0_offset: i32 = 16;
+        let col1_offset: i32 = 16 + 7; // col0: topdelta(1)+length(1)+pad(1)+2pixels+pad(1)+sentinel(1) = 7
+        data.extend_from_slice(&col0_offset.to_le_bytes());
+        data.extend_from_slice(&col1_offset.to_le_bytes());
+
+        // Column 0 data: topdelta=0, length=2, pad=0, pixels=[0xAA, 0xBB], pad=0, sentinel=0xFF
+        data.extend_from_slice(&[0, 2, 0, 0xAA, 0xBB, 0, 0xFF]);
+        // Column 1 data: topdelta=0, length=2, pad=0, pixels=[0xCC, 0xDD], pad=0, sentinel=0xFF
+        data.extend_from_slice(&[0, 2, 0, 0xCC, 0xDD, 0, 0xFF]);
+
+        data
+    }
+
+    #[test]
+    fn test_draw_patch_basic() {
+        let mut video = VideoState::new();
+        let patch = build_test_patch_2x2();
+        let sw = SCREENWIDTH as usize;
+
+        // Draw at position (10, 20) on screen 0
+        video.draw_patch(10, 20, 0, &patch);
+
+        // Column 0 writes vertically: (10, 20)=0xAA, (10, 21)=0xBB
+        assert_eq!(video.screens[0][20 * sw + 10], 0xAA);
+        assert_eq!(video.screens[0][21 * sw + 10], 0xBB);
+        // Column 1 writes vertically: (11, 20)=0xCC, (11, 21)=0xDD
+        assert_eq!(video.screens[0][20 * sw + 11], 0xCC);
+        assert_eq!(video.screens[0][21 * sw + 11], 0xDD);
+    }
+
+    #[test]
+    fn test_draw_patch_marks_dirty_on_screen0() {
+        let mut video = VideoState::new();
+        video.clear_dirty_box();
+        let patch = build_test_patch_2x2();
+        video.draw_patch(10, 20, 0, &patch);
+        // Dirty box should encompass the patch area
+        assert!(video.dirtybox[BOXLEFT] <= 10);
+        assert!(video.dirtybox[BOXRIGHT] >= 11);
+        assert!(video.dirtybox[BOXBOTTOM] <= 20);
+        assert!(video.dirtybox[BOXTOP] >= 21);
+    }
+
+    #[test]
+    fn test_draw_patch_no_dirty_on_nonzero_screen() {
+        let mut video = VideoState::new();
+        video.clear_dirty_box();
+        let patch = build_test_patch_2x2();
+        video.draw_patch(10, 20, 1, &patch);
+        // Dirty box should remain in "cleared" state since we drew to screen 1
+        assert_eq!(video.dirtybox[BOXTOP], i32::MIN);
+        assert_eq!(video.dirtybox[BOXRIGHT], i32::MIN);
+    }
+
+    #[test]
+    fn test_draw_patch_too_small_data() {
+        let mut video = VideoState::new();
+        // Data smaller than 8-byte header should be safely rejected
+        video.draw_patch(0, 0, 0, &[0; 4]);
+        // Screen should remain untouched
+        assert!(video.screens[0].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_draw_patch_out_of_bounds_rejected() {
+        let mut video = VideoState::new();
+        let patch = build_test_patch_2x2();
+        // Position that puts the 2x2 patch beyond screen right edge
+        video.draw_patch(319, 0, 0, &patch);
+        // Should be rejected — screen untouched
+        assert!(video.screens[0].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_draw_patch_with_offsets() {
+        let mut data = Vec::new();
+        // Patch: width=1, height=1, leftoffset=5, topoffset=3
+        data.extend_from_slice(&1i16.to_le_bytes());
+        data.extend_from_slice(&1i16.to_le_bytes());
+        data.extend_from_slice(&5i16.to_le_bytes()); // leftoffset=5
+        data.extend_from_slice(&3i16.to_le_bytes()); // topoffset=3
+
+        // Column offset table (1 entry)
+        let col_offset: i32 = 12; // header(8) + colofs(4)
+        data.extend_from_slice(&col_offset.to_le_bytes());
+
+        // Column data: topdelta=0, length=1, pad, pixel=0xFF, pad, sentinel
+        data.extend_from_slice(&[0, 1, 0, 0xFF, 0, 0xFF]);
+
+        let mut video = VideoState::new();
+        let sw = SCREENWIDTH as usize;
+        // Draw at (15, 13) — effective position is (15-5, 13-3) = (10, 10)
+        video.draw_patch(15, 13, 0, &data);
+        assert_eq!(video.screens[0][10 * sw + 10], 0xFF);
+    }
+
+    // =========================================================================
+    // draw_patch_flipped tests
+    // =========================================================================
+
+    #[test]
+    fn test_draw_patch_flipped_reverses_columns() {
+        let mut video = VideoState::new();
+        let patch = build_test_patch_2x2();
+        let sw = SCREENWIDTH as usize;
+
+        video.draw_patch_flipped(10, 20, 0, &patch);
+
+        // Flipped: screen col 0 reads from columnofs[1] (0xCC, 0xDD)
+        //          screen col 1 reads from columnofs[0] (0xAA, 0xBB)
+        assert_eq!(video.screens[0][20 * sw + 10], 0xCC);
+        assert_eq!(video.screens[0][21 * sw + 10], 0xDD);
+        assert_eq!(video.screens[0][20 * sw + 11], 0xAA);
+        assert_eq!(video.screens[0][21 * sw + 11], 0xBB);
+    }
+
+    #[test]
+    fn test_draw_patch_flipped_too_small_data() {
+        let mut video = VideoState::new();
+        video.draw_patch_flipped(0, 0, 0, &[0; 4]);
+        assert!(video.screens[0].iter().all(|&b| b == 0));
+    }
+
+    // =========================================================================
+    // draw_patch_direct test
+    // =========================================================================
+
+    #[test]
+    fn test_draw_patch_direct_delegates_to_draw_patch() {
+        let patch = build_test_patch_2x2();
+
+        let mut video1 = VideoState::new();
+        video1.draw_patch(10, 20, 0, &patch);
+
+        let mut video2 = VideoState::new();
+        video2.draw_patch_direct(10, 20, 0, &patch);
+
+        // Both should produce identical screen contents
+        assert_eq!(video1.screens[0], video2.screens[0]);
+    }
+
+    // =========================================================================
+    // Screen isolation tests
+    // =========================================================================
+
+    #[test]
+    fn test_draw_block_screen_isolation() {
+        let mut video = VideoState::new();
+        let src = vec![0xCC; 10 * 10];
+        video.draw_block(0, 0, 2, 10, 10, &src);
+
+        // Other screens should be untouched
+        for i in [0, 1, 3, 4] {
+            assert!(
+                video.screens[i].iter().all(|&b| b == 0),
+                "Screen {} should be untouched after drawing to screen 2",
+                i
+            );
+        }
+    }
+}

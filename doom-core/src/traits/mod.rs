@@ -19,8 +19,10 @@
 
 pub mod audio;
 pub mod platform;
+pub mod renderer;
 pub mod wad;
 
 pub use audio::AudioBackend;
 pub use platform::PlatformHost;
+pub use renderer::Renderer;
 pub use wad::WadProvider;
