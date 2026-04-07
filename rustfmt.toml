@@ -1,5 +1,30 @@
-# Code formatting rules for DOOM Rust workspace
+# =============================================================================
+# DOOM Rust — Code Formatting Configuration
+# =============================================================================
+#
+# Rust code formatting rules for the DOOM Rust workspace.
+# Applied by `cargo fmt` across all five workspace crates:
+#   doom-wad, doom-core, doom-render-soft, doom-platform-win, doom-bin
+#
+# Settings are intentionally minimal and close to Rust community defaults.
+# All options below are compatible with stable rustfmt (no nightly-only features).
+#
+# Validate:  cargo fmt --check
+# Apply:     cargo fmt
+# =============================================================================
+
+# Match the Rust edition used in the workspace Cargo.toml.
 edition = "2021"
+
+# Standard maximum line width. Keeps code readable without excessive wrapping,
+# and handles the large data-table files (info/states.rs, info/mobjinfo.rs,
+# types/tables.rs) gracefully.
 max_width = 100
+
+# Standard indentation: 4 spaces per indent level.
 tab_spaces = 4
+
+# Use default heuristic widths for formatting decisions (fn args, struct fields,
+# array literals, etc.). This avoids aggressive wrapping that would bloat the
+# large lookup-table initializers translated from the original C data arrays.
 use_small_heuristics = "Default"
