@@ -20,3 +20,4 @@
 pub mod doomtype;
 pub mod fixed;
 pub mod thinker;
+pub mod ticcmd;
