@@ -17,6 +17,7 @@
 //! Translated from the `m_*.c/h` utility files in `linuxdoom-1.10/`.
 
 pub mod argv;
+pub mod bbox;
 pub mod cheat;
 pub mod random;
 pub mod swap;
