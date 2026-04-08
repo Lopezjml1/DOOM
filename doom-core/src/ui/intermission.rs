@@ -2290,12 +2290,14 @@ mod tests {
     #[test]
     fn test_wi_init_variables_clamp() {
         let mut state = IntermissionState::new();
-        let mut wbs = WbStartStruct::default();
-        wbs.maxkills = 0;
-        wbs.maxitems = -5;
-        wbs.maxsecret = 0;
-        wbs.last = -1;
-        wbs.epsd = 100;
+        let wbs = WbStartStruct {
+            maxkills: 0,
+            maxitems: -5,
+            maxsecret: 0,
+            last: -1,
+            epsd: 100,
+            ..Default::default()
+        };
 
         wi_init_variables(&mut state, &wbs);
 
