@@ -16,6 +16,7 @@
 //!
 //! This is a stub that will be replaced with full implementation.
 
+pub mod data;
 pub mod defs;
 pub mod draw;
 pub mod sky;

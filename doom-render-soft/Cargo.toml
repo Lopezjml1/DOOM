@@ -72,8 +72,8 @@ description = "Software renderer for DOOM 1.10 Rust port — BSP traversal, wall
 #   - NO doom-bin dependency — the binary crate depends on this, not the
 #     reverse
 #   - NO clap dependency — CLI parsing is in doom-bin only
-#   - NO byteorder dependency — byte ordering is handled by doom-wad when
-#     loading lumps; the renderer works with already-parsed data
+#   - byteorder dependency — needed for reading little-endian WAD binary
+#     data (texture definitions, patch headers) in R_InitTextures/R_InitSpriteLumps
 #   - NO bitflags dependency — bitflag types are defined in doom-core
 #   - NO thiserror dependency — error handling uses doom-core error types
 #     or panics matching the original I_Error() behavior
@@ -114,4 +114,11 @@ doom-wad = { path = "../doom-wad" }
 #   - Texture cache statistics during level loading
 # Output filtering is controlled via RUST_LOG environment variable
 # (configured by tracing-subscriber in doom-bin).
+# Little-endian binary data reading for WAD texture format parsing.
+# R_InitTextures reads PNAMES lump (i32 count + 8-byte names),
+# TEXTURE1/TEXTURE2 lumps (i32 count + maptexture_t/mappatch_t structures),
+# and R_InitSpriteLumps reads patch_t headers. All WAD data is
+# stored in little-endian format regardless of host architecture.
+byteorder = { workspace = true }
+
 tracing = { workspace = true }
