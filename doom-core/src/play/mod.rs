@@ -2,6 +2,7 @@
 //!
 //! Translated from linuxdoom-1.10/p_local.h and the p_*.c family.
 
+pub mod inter;
 pub mod maputl;
 pub mod mobj;
 pub mod pspr;
