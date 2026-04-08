@@ -10,3 +10,4 @@ pub mod pspr;
 pub mod setup;
 pub mod sight;
 pub mod spec;
+pub mod user;
