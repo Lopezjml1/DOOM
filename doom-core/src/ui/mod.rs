@@ -17,6 +17,7 @@
 //! the status bar, HUD, menus, intermission screens, automap, finale,
 //! and screen wipe transitions.
 
+pub mod automap;
 pub mod hud_lib;
 pub mod intermission;
 pub mod statusbar_lib;
