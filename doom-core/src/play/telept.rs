@@ -720,10 +720,7 @@ mod tests {
 
         let mut ctx = TestTeleportCtx {
             sectors: vec![(1, vec![1])],
-            mobjs: vec![
-                monster,
-                make_teleportman(200, 300, Angle::new(0), 0),
-            ],
+            mobjs: vec![monster, make_teleportman(200, 300, Angle::new(0), 0)],
             line_tags: vec![1],
             teleport_move_result: true,
             fog_spawned: Vec::new(),
@@ -749,9 +746,9 @@ mod tests {
         // Create multiple sectors, with the matching one at index 2.
         let mut ctx = TestTeleportCtx {
             sectors: vec![
-                (0, vec![]),    // Sector 0: tag 0 (no match)
-                (5, vec![]),    // Sector 1: tag 5 (no match)
-                (1, vec![1]),   // Sector 2: tag 1 (matches!)
+                (0, vec![]),  // Sector 0: tag 0 (no match)
+                (5, vec![]),  // Sector 1: tag 5 (no match)
+                (1, vec![1]), // Sector 2: tag 1 (matches!)
             ],
             mobjs: vec![
                 make_player_mobj(50, 50),
@@ -776,10 +773,7 @@ mod tests {
 
         let mut ctx = TestTeleportCtx {
             sectors: vec![(1, vec![1])],
-            mobjs: vec![
-                make_player_mobj(50, 50),
-                dest,
-            ],
+            mobjs: vec![make_player_mobj(50, 50), dest],
             line_tags: vec![1],
             teleport_move_result: true,
             fog_spawned: Vec::new(),
