@@ -798,6 +798,13 @@ pub trait SpecContext {
 
     // --- Cross-module: Thinker management ---
     fn p_add_thinker_floor(&mut self, floor: FloorMoveT) -> usize;
+    fn p_add_thinker_door(&mut self, door: VldoorT) -> usize;
+
+    // --- Cross-module: Door re-use (bump logic) ---
+    /// Returns a mutable reference to the door data for a given thinker
+    /// data handle (as stored in `sector.specialdata`). Returns `None` if
+    /// the handle does not refer to a door thinker.
+    fn get_door_data_mut(&mut self, handle: usize) -> Option<&mut VldoorT>;
 
     // --- Cross-module: Texture/flat name resolution ---
     fn r_flat_num_for_name(&self, name: &str) -> i32;
