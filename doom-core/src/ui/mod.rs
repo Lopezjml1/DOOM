@@ -22,6 +22,7 @@ pub mod finale;
 pub mod hud;
 pub mod hud_lib;
 pub mod intermission;
+pub mod menu;
 pub mod statusbar;
 pub mod statusbar_lib;
 pub mod wipe;
