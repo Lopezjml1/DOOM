@@ -13,6 +13,7 @@ pub mod mobj;
 pub mod movement;
 pub mod plats;
 pub mod pspr;
+pub mod saveg;
 pub mod setup;
 pub mod sight;
 pub mod spec;
