@@ -809,20 +809,31 @@ pub fn a_saw(
     let target_angle = point_to_angle2(mo_x, mo_y, target_x, target_y);
 
     // Limit turn rate to ANG90/20 per tic (to prevent instant snap).
+    // Matches C p_pspr.c A_Saw — 4 branches: far-left snap, left nudge,
+    // far-right snap, right nudge.
     let current_angle = ctx.get_mobj(mo_idx).angle;
     let diff = Angle(target_angle.0.wrapping_sub(current_angle.0));
 
     if diff.0 > ANG180.0 {
-        // Target is to the left (diff wrapped around).
+        // Target is to the left (diff wrapped past 180°).
         if diff.0.wrapping_neg() > (ANG90.0 / 20) {
+            // Far left — snap near target from the left side.
             ctx.get_mobj_mut(mo_idx).angle = Angle(target_angle.0.wrapping_add(ANG90.0 / 21));
+        } else {
+            // Slightly left — nudge player facing leftward.
+            let a = ctx.get_mobj(mo_idx).angle;
+            ctx.get_mobj_mut(mo_idx).angle = Angle(a.0.wrapping_sub(ANG90.0 / 20));
         }
-    } else if diff.0 > ANG90.0 / 20 {
-        // Target is to the right.
-        ctx.get_mobj_mut(mo_idx).angle = Angle(target_angle.0.wrapping_sub(ANG90.0 / 21));
     } else {
-        // Within turn limit — snap to target angle.
-        ctx.get_mobj_mut(mo_idx).angle = target_angle;
+        // Target is to the right (diff <= 180°).
+        if diff.0 > ANG90.0 / 20 {
+            // Far right — snap near target from the right side.
+            ctx.get_mobj_mut(mo_idx).angle = Angle(target_angle.0.wrapping_sub(ANG90.0 / 21));
+        } else {
+            // Slightly right — nudge player facing rightward.
+            let a = ctx.get_mobj(mo_idx).angle;
+            ctx.get_mobj_mut(mo_idx).angle = Angle(a.0.wrapping_add(ANG90.0 / 20));
+        }
     }
 
     // Set MF_JUSTATTACKED flag.

@@ -25,20 +25,25 @@
 //! - [`p_xy_movement`] — Horizontal physics per tic (friction, blocking).
 //! - [`p_z_movement`] — Vertical physics per tic (gravity, float, clipping).
 //!
-//! # Safety
+//! # State Management (AAP §0.7.5)
 //!
-//! This module uses `static mut` globals for movement state, matching the
-//! original C code's global-variable architecture. All access is through
-//! `unsafe` blocks and is safe in DOOM's single-threaded execution model.
+//! All formerly-global movement state is consolidated into the
+//! [`MovementState`] struct, stored in a single `static mut MS`.
+//! A single consolidated struct replaces ~30 individual `static mut`
+//! globals, reducing the unsafe surface area and making state
+//! dependencies explicit.  The remaining `static mut` is required
+//! because [`ptr_slide_traverse`] is a bare function-pointer
+//! ([`traverser_t`]) that cannot capture environment.  All access
+//! is confined to DOOM's single-threaded execution model.
 
-#![allow(non_upper_case_globals)]
+#![allow(static_mut_refs)]
 
 use crate::info::mobjinfo::{MobjType, MOBJINFO};
 use crate::info::sounds::SfxEnum;
 use crate::info::states::StateNum;
 use crate::play::maputl::{
-    self, p_aprox_distance, p_box_on_line_side, p_line_opening, p_point_on_line_side, traverser_t,
-    Intercept, InterceptData,
+    p_aprox_distance, p_box_on_line_side, p_line_opening, p_point_on_line_side, traverser_t,
+    Intercept, InterceptData, MapUtilState,
 };
 use crate::types::angle::{Angle, ANG180, ANGLETOFINESHIFT};
 use crate::types::fixed::{Fixed, FRACBITS, FRACUNIT};
@@ -175,117 +180,306 @@ pub trait MovementContext {
 }
 
 // ==========================================================================
-// Movement globals (static mut — matches original C globals)
+// Consolidated Movement State (AAP §0.7.5)
 // ==========================================================================
 
-/// Temporary movement bounding box.
-static mut tmbbox: [Fixed; 4] = [Fixed(0); 4];
+/// All movement-related mutable state, consolidated from ~30 individual
+/// `static mut` globals into a single struct.
+///
+/// Contains:
+/// - Movement check state (tmthing, tmbbox, tmflags, etc.)
+/// - Result state from `p_check_position` (floatok, tmfloorz, etc.)
+/// - Special-line crossing tracking (spechit)
+/// - Slide move state (bestslidefrac, slidemo, etc.)
+/// - Slide traverse cached data (raw pointers to level geometry, valid
+///   only during `p_slide_move` scope)
+/// - Embedded `MapUtilState` for `p_line_opening` calls from callbacks
+pub struct MovementState {
+    // --- Movement check state ---
+    /// Temporary movement bounding box.
+    pub tmbbox: [Fixed; 4],
+    /// Arena index of the thing being moved.
+    pub tmthing_idx: Option<usize>,
+    /// Cached copy of `tmthing.flags`.
+    pub tmflags: MobjFlags,
+    /// Destination X coordinate.
+    pub tmx: Fixed,
+    /// Destination Y coordinate.
+    pub tmy: Fixed,
+    /// Cached radius of the moving thing.
+    pub tmradius: Fixed,
+    /// Cached height of the moving thing.
+    pub tmheight: Fixed,
+    /// Cached Z of the moving thing.
+    pub tmz: Fixed,
+    /// Cached MobjType index of the moving thing.
+    pub tmtype: usize,
+    /// Cached info.damage of the moving thing.
+    pub tm_info_damage: i32,
+    /// Cached info.spawnstate of the moving thing.
+    pub tm_info_spawnstate: StateNum,
+    /// Cached target index of the moving thing.
+    pub tm_target: Option<usize>,
+    /// Cached MobjType of the moving thing's target.
+    pub tm_target_type: Option<usize>,
+    /// Cached player index (Some if the thing is a player).
+    pub tm_player: Option<usize>,
 
-/// Arena index of the thing being moved.
-static mut tmthing_idx: Option<usize> = None;
+    // --- Result state from P_CheckPosition ---
+    /// If `true`, the move is OK if within the floor-ceiling gap.
+    pub floatok: bool,
+    /// Highest contacted floor height.
+    pub tmfloorz: Fixed,
+    /// Lowest contacted ceiling height.
+    pub tmceilingz: Fixed,
+    /// Lowest floor point contacted (for dropoff detection).
+    pub tmdropoffz: Fixed,
+    /// Line that lowers the ceiling (used for sky missile hack).
+    pub ceilingline: Option<usize>,
 
-/// Cached copy of `tmthing.flags`.
-static mut tmflags: MobjFlags = MobjFlags::empty();
+    // --- Special line crossing tracking ---
+    /// Line indices of special lines crossed during P_TryMove.
+    pub spechit: [usize; MAXSPECIALCROSS],
+    /// Number of special lines recorded in `spechit`.
+    pub numspechit: usize,
 
-/// Destination X coordinate.
-static mut tmx: Fixed = Fixed(0);
+    // --- Slide move state (p_map.c lines 566-575) ---
+    pub bestslidefrac: Fixed,
+    pub secondslidefrac: Fixed,
+    pub bestslideline: Option<usize>,
+    pub secondslideline: Option<usize>,
+    pub slidemo_idx: Option<usize>,
+    pub tmxmove: Fixed,
+    pub tmymove: Fixed,
 
-/// Destination Y coordinate.
-static mut tmy: Fixed = Fixed(0);
+    // --- Slide traverse cached data ---
+    // Raw pointer + length pairs for level geometry slices.  These are set
+    // at the start of `p_slide_move` and are valid only for the duration
+    // of that call (the slices are borrowed from the context).
+    //
+    // SAFETY: These pointers must not be dereferenced after `p_slide_move`
+    // returns. They are used only by `ptr_slide_traverse` (a bare function
+    // pointer) which executes within the `p_slide_move` scope.
+    slide_lines_ptr: *const LineDef,
+    slide_lines_len: usize,
+    slide_sectors_ptr: *const Sector,
+    slide_sectors_len: usize,
+    slide_vertexes_ptr: *const Vertex,
+    slide_vertexes_len: usize,
+    /// Cached mobj X for slide traverse (avoids mobj arena borrow).
+    pub slide_mo_x: Fixed,
+    /// Cached mobj Y for slide traverse.
+    pub slide_mo_y: Fixed,
+    /// Cached mobj Z for slide traverse.
+    pub slide_mo_z: Fixed,
+    /// Cached mobj height for slide traverse.
+    pub slide_mo_height: Fixed,
 
-// Pre-cached tmthing fields for use inside PIT callbacks where the mobj
-// arena may be borrowed immutably by the blockmap iterator.
+    // --- Embedded map utility state ---
+    /// Used by `pit_check_line` and `ptr_slide_traverse` to call
+    /// `p_line_opening` and read the resulting opentop / openbottom /
+    /// openrange / lowfloor values.
+    pub map_util: MapUtilState,
+}
 
-static mut tmradius: Fixed = Fixed(0);
-static mut tmheight: Fixed = Fixed(0);
-static mut tmz: Fixed = Fixed(0);
-static mut tmtype: usize = 0; // MobjType index
-static mut tm_info_damage: i32 = 0;
-static mut tm_info_spawnstate: StateNum = StateNum::S_NULL;
-static mut tm_target: Option<usize> = None;
-static mut tm_target_type: Option<usize> = None;
-static mut tm_player: Option<usize> = None;
+impl MovementState {
+    /// Returns the slide-traverse lines slice.
+    ///
+    /// # Safety
+    ///
+    /// Only valid during `p_slide_move` while the raw pointers are set.
+    unsafe fn slide_lines(&self) -> &[LineDef] {
+        assert!(!self.slide_lines_ptr.is_null());
+        std::slice::from_raw_parts(self.slide_lines_ptr, self.slide_lines_len)
+    }
 
-// --- Result state from P_CheckPosition ---
+    /// Returns the slide-traverse sectors slice.
+    ///
+    /// # Safety
+    ///
+    /// Only valid during `p_slide_move` while the raw pointers are set.
+    unsafe fn slide_sectors(&self) -> &[Sector] {
+        assert!(!self.slide_sectors_ptr.is_null());
+        std::slice::from_raw_parts(self.slide_sectors_ptr, self.slide_sectors_len)
+    }
 
-/// If `true`, the move is OK if within the floor-ceiling gap.
-pub static mut floatok: bool = false;
+    /// Returns the slide-traverse vertexes slice.
+    ///
+    /// # Safety
+    ///
+    /// Only valid during `p_slide_move` while the raw pointers are set.
+    unsafe fn slide_vertexes(&self) -> &[Vertex] {
+        assert!(!self.slide_vertexes_ptr.is_null());
+        std::slice::from_raw_parts(self.slide_vertexes_ptr, self.slide_vertexes_len)
+    }
 
-/// Highest contacted floor height.
-pub static mut tmfloorz: Fixed = Fixed(0);
+    /// Clear raw slide pointers (defensive reset after p_slide_move).
+    fn clear_slide_pointers(&mut self) {
+        self.slide_lines_ptr = std::ptr::null();
+        self.slide_lines_len = 0;
+        self.slide_sectors_ptr = std::ptr::null();
+        self.slide_sectors_len = 0;
+        self.slide_vertexes_ptr = std::ptr::null();
+        self.slide_vertexes_len = 0;
+    }
+}
 
-/// Lowest contacted ceiling height.
-pub static mut tmceilingz: Fixed = Fixed(0);
+impl Default for MovementState {
+    fn default() -> Self {
+        Self {
+            tmbbox: [Fixed(0); 4],
+            tmthing_idx: None,
+            tmflags: MobjFlags::empty(),
+            tmx: Fixed(0),
+            tmy: Fixed(0),
+            tmradius: Fixed(0),
+            tmheight: Fixed(0),
+            tmz: Fixed(0),
+            tmtype: 0,
+            tm_info_damage: 0,
+            tm_info_spawnstate: StateNum::S_NULL,
+            tm_target: None,
+            tm_target_type: None,
+            tm_player: None,
+            floatok: false,
+            tmfloorz: Fixed(0),
+            tmceilingz: Fixed(0),
+            tmdropoffz: Fixed(0),
+            ceilingline: None,
+            spechit: [0; MAXSPECIALCROSS],
+            numspechit: 0,
+            bestslidefrac: Fixed(0),
+            secondslidefrac: Fixed(0),
+            bestslideline: None,
+            secondslideline: None,
+            slidemo_idx: None,
+            tmxmove: Fixed(0),
+            tmymove: Fixed(0),
+            slide_lines_ptr: std::ptr::null(),
+            slide_lines_len: 0,
+            slide_sectors_ptr: std::ptr::null(),
+            slide_sectors_len: 0,
+            slide_vertexes_ptr: std::ptr::null(),
+            slide_vertexes_len: 0,
+            slide_mo_x: Fixed(0),
+            slide_mo_y: Fixed(0),
+            slide_mo_z: Fixed(0),
+            slide_mo_height: Fixed(0),
+            map_util: MapUtilState::new(),
+        }
+    }
+}
 
-/// Lowest floor point contacted (for dropoff detection).
-pub static mut tmdropoffz: Fixed = Fixed(0);
-
-/// Line that lowers the ceiling (used for sky missile hack).
-pub static mut ceilingline: Option<usize> = None;
-
-// --- Special line crossing tracking ---
-
-/// Line indices of special lines crossed during P_TryMove.
-pub static mut spechit: [usize; MAXSPECIALCROSS] = [0; MAXSPECIALCROSS];
-
-/// Number of special lines recorded in `spechit`.
-pub static mut numspechit: usize = 0;
-
-// --- Slide move state (p_map.c lines 566-575) ---
-
-static mut bestslidefrac: Fixed = Fixed(0);
-static mut secondslidefrac: Fixed = Fixed(0);
-static mut bestslideline: Option<usize> = None;
-static mut secondslideline: Option<usize> = None;
-static mut slidemo_idx: Option<usize> = None;
-static mut tmxmove: Fixed = Fixed(0);
-static mut tmymove: Fixed = Fixed(0);
-
-// --- Raw pointers for PTR_SlideTraverse access (set before path traverse) ---
-
-static mut SLIDE_LINES_PTR: *const LineDef = std::ptr::null();
-static mut SLIDE_LINES_LEN: usize = 0;
-static mut SLIDE_SECTORS_PTR: *const Sector = std::ptr::null();
-static mut SLIDE_SECTORS_LEN: usize = 0;
-static mut SLIDE_VERTEXES_PTR: *const Vertex = std::ptr::null();
-static mut SLIDE_VERTEXES_LEN: usize = 0;
-static mut SLIDE_MO_X: Fixed = Fixed(0);
-static mut SLIDE_MO_Y: Fixed = Fixed(0);
-static mut SLIDE_MO_Z: Fixed = Fixed(0);
-static mut SLIDE_MO_HEIGHT: Fixed = Fixed(0);
+/// Consolidated movement state singleton.
+///
+/// # Safety
+///
+/// DOOM is single-threaded. This static is accessed only from the main
+/// game loop thread. The consolidation into a single struct (replacing
+/// ~30 individual `static mut` globals) makes state dependencies
+/// explicit and reduces the unsafe surface area. The remaining `static
+/// mut` is required because [`ptr_slide_traverse`] is a bare function
+/// pointer ([`traverser_t`]) that cannot capture environment.
+static mut MS: MovementState = {
+    // const-init the struct to avoid Default at runtime
+    MovementState {
+        tmbbox: [Fixed(0); 4],
+        tmthing_idx: None,
+        tmflags: MobjFlags::empty(),
+        tmx: Fixed(0),
+        tmy: Fixed(0),
+        tmradius: Fixed(0),
+        tmheight: Fixed(0),
+        tmz: Fixed(0),
+        tmtype: 0,
+        tm_info_damage: 0,
+        tm_info_spawnstate: StateNum::S_NULL,
+        tm_target: None,
+        tm_target_type: None,
+        tm_player: None,
+        floatok: false,
+        tmfloorz: Fixed(0),
+        tmceilingz: Fixed(0),
+        tmdropoffz: Fixed(0),
+        ceilingline: None,
+        spechit: [0; MAXSPECIALCROSS],
+        numspechit: 0,
+        bestslidefrac: Fixed(0),
+        secondslidefrac: Fixed(0),
+        bestslideline: None,
+        secondslideline: None,
+        slidemo_idx: None,
+        tmxmove: Fixed(0),
+        tmymove: Fixed(0),
+        slide_lines_ptr: std::ptr::null(),
+        slide_lines_len: 0,
+        slide_sectors_ptr: std::ptr::null(),
+        slide_sectors_len: 0,
+        slide_vertexes_ptr: std::ptr::null(),
+        slide_vertexes_len: 0,
+        slide_mo_x: Fixed(0),
+        slide_mo_y: Fixed(0),
+        slide_mo_z: Fixed(0),
+        slide_mo_height: Fixed(0),
+        map_util: MapUtilState {
+            intercepts: [Intercept {
+                frac: Fixed(0),
+                is_a_line: false,
+                d: InterceptData::Line(0),
+            }; 128],
+            intercept_p: 0,
+            trace: crate::play::maputl::Divline {
+                x: Fixed(0),
+                y: Fixed(0),
+                dx: Fixed(0),
+                dy: Fixed(0),
+            },
+            earlyout: false,
+            ptflags: 0,
+            opentop: Fixed(0),
+            openbottom: Fixed(0),
+            openrange: Fixed(0),
+            lowfloor: Fixed(0),
+        },
+    }
+};
 
 // ==========================================================================
 // Helper: cache tmthing fields into statics
 // ==========================================================================
 
-/// Copy relevant fields from `mobjs[thing_idx]` into static mut globals
-/// so that PIT_* callbacks can read them without holding an immutable
-/// borrow on the mobj arena.
+/// Copy relevant fields from `mobjs[thing_idx]` into `MS` so that
+/// PIT_* callbacks can read them without holding an immutable borrow
+/// on the mobj arena.
+///
+/// # Safety
+///
+/// Accesses the consolidated `static mut MS`.
 unsafe fn cache_tmthing(thing_idx: usize, mobjs: &[MapObject]) {
     let mo = &mobjs[thing_idx];
-    tmthing_idx = Some(thing_idx);
-    tmflags = mo.flags;
-    tmradius = mo.radius;
-    tmheight = mo.height;
-    tmz = mo.z;
-    tmtype = mo.type_;
-    tm_player = mo.player;
-    tm_target = mo.target;
+    MS.tmthing_idx = Some(thing_idx);
+    MS.tmflags = mo.flags;
+    MS.tmradius = mo.radius;
+    MS.tmheight = mo.height;
+    MS.tmz = mo.z;
+    MS.tmtype = mo.type_;
+    MS.tm_player = mo.player;
+    MS.tm_target = mo.target;
     if let Some(info_idx) = mo.info {
-        tm_info_damage = MOBJINFO[info_idx].damage;
-        tm_info_spawnstate = MOBJINFO[info_idx].spawnstate;
+        MS.tm_info_damage = MOBJINFO[info_idx].damage;
+        MS.tm_info_spawnstate = MOBJINFO[info_idx].spawnstate;
     } else {
-        tm_info_damage = 0;
-        tm_info_spawnstate = StateNum::S_NULL;
+        MS.tm_info_damage = 0;
+        MS.tm_info_spawnstate = StateNum::S_NULL;
     }
     if let Some(target_idx) = mo.target {
         if target_idx < mobjs.len() {
-            tm_target_type = Some(mobjs[target_idx].type_);
+            MS.tm_target_type = Some(mobjs[target_idx].type_);
         } else {
-            tm_target_type = None;
+            MS.tm_target_type = None;
         }
     } else {
-        tm_target_type = None;
+        MS.tm_target_type = None;
     }
 }
 
@@ -310,13 +504,13 @@ fn pit_stomp_thing(thing_idx: usize, ctx: &mut dyn MovementContext) -> bool {
         return true;
     }
 
-    let tmthing_i = unsafe { tmthing_idx.unwrap() };
-
-    let blockdist = thing_radius + unsafe { tmradius };
+    // SAFETY: single-threaded access to consolidated MS.
+    let tmthing_i = unsafe { MS.tmthing_idx.unwrap() };
+    let blockdist = thing_radius + unsafe { MS.tmradius };
 
     // Not within stomping distance
-    if (thing_x - unsafe { tmx }).0.abs() >= blockdist.0
-        || (thing_y - unsafe { tmy }).0.abs() >= blockdist.0
+    if (thing_x - unsafe { MS.tmx }).0.abs() >= blockdist.0
+        || (thing_y - unsafe { MS.tmy }).0.abs() >= blockdist.0
     {
         return true;
     }
@@ -327,7 +521,7 @@ fn pit_stomp_thing(thing_idx: usize, ctx: &mut dyn MovementContext) -> bool {
     }
 
     // Monsters can only telefrag on MAP30 (boss map)
-    let is_player = unsafe { std::ptr::addr_of!(tm_player).read().is_some() };
+    let is_player = unsafe { MS.tm_player.is_some() };
     if !is_player && ctx.gamemap() != 30 {
         return false;
     }
@@ -354,17 +548,17 @@ pub fn p_teleport_move(
     y: Fixed,
     ctx: &mut dyn MovementContext,
 ) -> bool {
-    // Cache tmthing fields
+    // SAFETY: single-threaded access to consolidated MS.
     unsafe {
         cache_tmthing(thing_idx, ctx.mobjs());
-        tmx = x;
-        tmy = y;
+        MS.tmx = x;
+        MS.tmy = y;
 
-        let radius = tmradius;
-        tmbbox[BOXTOP] = y + radius;
-        tmbbox[BOXBOTTOM] = y - radius;
-        tmbbox[BOXRIGHT] = x + radius;
-        tmbbox[BOXLEFT] = x - radius;
+        let radius = MS.tmradius;
+        MS.tmbbox[BOXTOP] = y + radius;
+        MS.tmbbox[BOXBOTTOM] = y - radius;
+        MS.tmbbox[BOXRIGHT] = x + radius;
+        MS.tmbbox[BOXLEFT] = x - radius;
     }
 
     // Determine the subsector at the destination to get floor/ceiling heights.
@@ -375,16 +569,17 @@ pub fn p_teleport_move(
         (s.floorheight, s.ceilingheight)
     };
 
+    // SAFETY: single-threaded access to consolidated MS.
     unsafe {
-        tmfloorz = floor_h;
-        tmdropoffz = floor_h;
-        tmceilingz = ceiling_h;
-        ceilingline = None;
+        MS.tmfloorz = floor_h;
+        MS.tmdropoffz = floor_h;
+        MS.tmceilingz = ceiling_h;
+        MS.ceilingline = None;
     }
 
     let _vc = ctx.inc_validcount();
     unsafe {
-        numspechit = 0;
+        MS.numspechit = 0;
     }
 
     // Stomp all things in the destination area using blockmap iteration.
@@ -392,10 +587,10 @@ pub fn p_teleport_move(
         let orgx = ctx.bmap_orgx();
         let orgy = ctx.bmap_orgy();
         (
-            (tmbbox[BOXLEFT].0 - orgx.0 - MAXRADIUS.0) >> MAPBLOCKSHIFT,
-            (tmbbox[BOXRIGHT].0 - orgx.0 + MAXRADIUS.0) >> MAPBLOCKSHIFT,
-            (tmbbox[BOXBOTTOM].0 - orgy.0 - MAXRADIUS.0) >> MAPBLOCKSHIFT,
-            (tmbbox[BOXTOP].0 - orgy.0 + MAXRADIUS.0) >> MAPBLOCKSHIFT,
+            (MS.tmbbox[BOXLEFT].0 - orgx.0 - MAXRADIUS.0) >> MAPBLOCKSHIFT,
+            (MS.tmbbox[BOXRIGHT].0 - orgx.0 + MAXRADIUS.0) >> MAPBLOCKSHIFT,
+            (MS.tmbbox[BOXBOTTOM].0 - orgy.0 - MAXRADIUS.0) >> MAPBLOCKSHIFT,
+            (MS.tmbbox[BOXTOP].0 - orgy.0 + MAXRADIUS.0) >> MAPBLOCKSHIFT,
         )
     };
 
@@ -414,13 +609,15 @@ pub fn p_teleport_move(
     ctx.unset_thing_position(thing_idx);
 
     // Update coordinates.
+    // SAFETY: single-threaded access to consolidated MS.
     {
+        let (fz, cz) = unsafe { (MS.tmfloorz, MS.tmceilingz) };
         let mo = &mut ctx.mobjs_mut()[thing_idx];
         mo.x = x;
         mo.y = y;
-        mo.z = unsafe { tmfloorz };
-        mo.floorz = unsafe { tmfloorz };
-        mo.ceilingz = unsafe { tmceilingz };
+        mo.z = fz;
+        mo.floorz = fz;
+        mo.ceilingz = cz;
     }
 
     // Re-link at new position.
@@ -507,12 +704,13 @@ fn collect_block_lines(
 fn pit_check_line(line_idx: usize, ctx: &mut dyn MovementContext) -> bool {
     let ld = ctx.lines()[line_idx]; // LineDef is Copy
 
-    // Quick bounding-box rejection (4 comparisons).
+    // SAFETY: single-threaded access to consolidated MS.
     unsafe {
-        if tmbbox[BOXRIGHT].0 <= ld.bbox[BOXLEFT].0
-            || tmbbox[BOXLEFT].0 >= ld.bbox[BOXRIGHT].0
-            || tmbbox[BOXTOP].0 <= ld.bbox[BOXBOTTOM].0
-            || tmbbox[BOXBOTTOM].0 >= ld.bbox[BOXTOP].0
+        // Quick bounding-box rejection (4 comparisons).
+        if MS.tmbbox[BOXRIGHT].0 <= ld.bbox[BOXLEFT].0
+            || MS.tmbbox[BOXLEFT].0 >= ld.bbox[BOXRIGHT].0
+            || MS.tmbbox[BOXTOP].0 <= ld.bbox[BOXBOTTOM].0
+            || MS.tmbbox[BOXBOTTOM].0 >= ld.bbox[BOXTOP].0
         {
             return true;
         }
@@ -520,7 +718,7 @@ fn pit_check_line(line_idx: usize, ctx: &mut dyn MovementContext) -> bool {
 
     // Bounding box vs line side test.
     let vertexes = ctx.vertexes();
-    if p_box_on_line_side(unsafe { &*std::ptr::addr_of!(tmbbox) }, &ld, vertexes) != -1 {
+    if p_box_on_line_side(unsafe { &MS.tmbbox }, &ld, vertexes) != -1 {
         return true;
     }
 
@@ -535,40 +733,38 @@ fn pit_check_line(line_idx: usize, ctx: &mut dyn MovementContext) -> bool {
     }
 
     // ML_BLOCKMONSTERS blocks non-player things.
-    if unsafe { std::ptr::addr_of!(tm_player).read().is_none() }
-        && (ld.flags & LineFlags::ML_BLOCKMONSTERS.bits()) != 0
-    {
+    if unsafe { MS.tm_player.is_none() } && (ld.flags & LineFlags::ML_BLOCKMONSTERS.bits()) != 0 {
         return false;
     }
 
-    // Compute opening through two-sided line.
-    p_line_opening(&ld, ctx.sectors());
-
+    // Compute opening through two-sided line using embedded MapUtilState.
+    // SAFETY: single-threaded access to consolidated MS.
     unsafe {
-        let open_top = maputl::opentop;
-        let open_bottom = maputl::openbottom;
-        let _open_range = maputl::openrange;
-        let low_floor = maputl::lowfloor;
+        p_line_opening(&mut MS.map_util, &ld, ctx.sectors());
+
+        let open_top = MS.map_util.opentop;
+        let open_bottom = MS.map_util.openbottom;
+        let low_floor = MS.map_util.lowfloor;
 
         // Adjust tmfloorz and tmceilingz.
-        if open_top < tmceilingz {
-            tmceilingz = open_top;
-            ceilingline = Some(line_idx);
+        if open_top < MS.tmceilingz {
+            MS.tmceilingz = open_top;
+            MS.ceilingline = Some(line_idx);
         }
-        if open_bottom > tmfloorz {
-            tmfloorz = open_bottom;
+        if open_bottom > MS.tmfloorz {
+            MS.tmfloorz = open_bottom;
         }
-        if low_floor < tmdropoffz {
-            tmdropoffz = low_floor;
+        if low_floor < MS.tmdropoffz {
+            MS.tmdropoffz = low_floor;
         }
     }
 
     // Record special lines for P_TryMove crossing detection.
     if ld.special != 0 {
         unsafe {
-            if numspechit < MAXSPECIALCROSS {
-                spechit[numspechit] = line_idx;
-                numspechit += 1;
+            if MS.numspechit < MAXSPECIALCROSS {
+                MS.spechit[MS.numspechit] = line_idx;
+                MS.numspechit += 1;
             }
         }
     }
@@ -613,22 +809,22 @@ fn pit_check_thing(thing_idx: usize, thing: &MapObject) -> (bool, ThingAction) {
         return (true, ThingAction::Continue);
     }
 
-    // Block distance check (combined radii).
-    let blockdist = Fixed(thing.radius.0 + unsafe { tmradius.0 });
-    let dx = Fixed((thing.x.0 - unsafe { tmx.0 }).abs());
-    let dy = Fixed((thing.y.0 - unsafe { tmy.0 }).abs());
+    // SAFETY: single-threaded access to consolidated MS.
+    let blockdist = Fixed(thing.radius.0 + unsafe { MS.tmradius.0 });
+    let dx = Fixed((thing.x.0 - unsafe { MS.tmx.0 }).abs());
+    let dy = Fixed((thing.y.0 - unsafe { MS.tmy.0 }).abs());
     if dx.0 >= blockdist.0 || dy.0 >= blockdist.0 {
         return (true, ThingAction::Continue);
     }
 
     // Don't clip against self.
-    let tm_idx = unsafe { tmthing_idx.unwrap() };
+    let tm_idx = unsafe { MS.tmthing_idx.unwrap() };
     if thing_idx == tm_idx {
         return (true, ThingAction::Continue);
     }
 
     // --- Skull-fly slam (lost soul charge attack) ---
-    let cached_flags = unsafe { std::ptr::addr_of!(tmflags).read() };
+    let cached_flags = unsafe { MS.tmflags };
     if cached_flags.contains(MobjFlags::MF_SKULLFLY) {
         return (
             false,
@@ -642,8 +838,8 @@ fn pit_check_thing(thing_idx: usize, thing: &MapObject) -> (bool, ThingAction) {
     // --- Missile impact ---
     if cached_flags.contains(MobjFlags::MF_MISSILE) {
         // z-range: missile can fly over or under the target.
-        let tm_z = unsafe { tmz };
-        let tm_h = unsafe { tmheight };
+        let tm_z = unsafe { MS.tmz };
+        let tm_h = unsafe { MS.tmheight };
         if tm_z.0 > thing.z.0 + thing.height.0 {
             return (true, ThingAction::Continue); // over
         }
@@ -652,8 +848,8 @@ fn pit_check_thing(thing_idx: usize, thing: &MapObject) -> (bool, ThingAction) {
         }
 
         // Same-species no-damage rule: knight ↔ bruiser projectiles.
-        let tm_target_tp = unsafe { tm_target_type };
-        if unsafe { std::ptr::addr_of!(tm_target).read().is_some() }
+        let tm_target_tp = unsafe { MS.tm_target_type };
+        if unsafe { MS.tm_target.is_some() }
             && tm_target_tp == Some(thing.type_)
             && (thing.type_ == MobjType::MT_KNIGHT as usize
                 || thing.type_ == MobjType::MT_BRUISER as usize)
@@ -669,7 +865,7 @@ fn pit_check_thing(thing_idx: usize, thing: &MapObject) -> (bool, ThingAction) {
             );
         }
 
-        let source = unsafe { tm_target };
+        let source = unsafe { MS.tm_target };
         return (
             false,
             ThingAction::MissileHit {
@@ -718,19 +914,17 @@ pub fn p_check_position(
     y: Fixed,
     ctx: &mut dyn MovementContext,
 ) -> bool {
+    // SAFETY: single-threaded access to consolidated MS.
     unsafe {
         cache_tmthing(thing_idx, ctx.mobjs());
-    }
+        MS.tmx = x;
+        MS.tmy = y;
 
-    unsafe {
-        tmx = x;
-        tmy = y;
-
-        let radius = tmradius;
-        tmbbox[BOXTOP] = Fixed(y.0 + radius.0);
-        tmbbox[BOXBOTTOM] = Fixed(y.0 - radius.0);
-        tmbbox[BOXRIGHT] = Fixed(x.0 + radius.0);
-        tmbbox[BOXLEFT] = Fixed(x.0 - radius.0);
+        let radius = MS.tmradius;
+        MS.tmbbox[BOXTOP] = Fixed(y.0 + radius.0);
+        MS.tmbbox[BOXBOTTOM] = Fixed(y.0 - radius.0);
+        MS.tmbbox[BOXRIGHT] = Fixed(x.0 + radius.0);
+        MS.tmbbox[BOXLEFT] = Fixed(x.0 - radius.0);
     }
 
     // Get floor/ceiling from destination subsector.
@@ -738,23 +932,19 @@ pub fn p_check_position(
     let sec_idx = ctx.subsectors()[new_ss].sector;
     unsafe {
         let sector = &ctx.sectors()[sec_idx];
-        tmfloorz = sector.floorheight;
-        tmdropoffz = sector.floorheight;
-        tmceilingz = sector.ceilingheight;
+        MS.tmfloorz = sector.floorheight;
+        MS.tmdropoffz = sector.floorheight;
+        MS.tmceilingz = sector.ceilingheight;
     }
 
     ctx.inc_validcount();
     unsafe {
-        ceilingline = None;
-        numspechit = 0;
+        MS.ceilingline = None;
+        MS.numspechit = 0;
     }
 
     // MF_NOCLIP ⇒ skip all collision.
-    if unsafe {
-        std::ptr::addr_of!(tmflags)
-            .read()
-            .contains(MobjFlags::MF_NOCLIP)
-    } {
+    if unsafe { MS.tmflags.contains(MobjFlags::MF_NOCLIP) } {
         return true;
     }
 
@@ -763,10 +953,15 @@ pub fn p_check_position(
     let orgx = ctx.bmap_orgx();
     let orgy = ctx.bmap_orgy();
 
-    let xl = (unsafe { tmbbox[BOXLEFT].0 } - orgx.0 - MAXRADIUS.0) >> MAPBLOCKSHIFT;
-    let xh = (unsafe { tmbbox[BOXRIGHT].0 } - orgx.0 + MAXRADIUS.0) >> MAPBLOCKSHIFT;
-    let yl = (unsafe { tmbbox[BOXBOTTOM].0 } - orgy.0 - MAXRADIUS.0) >> MAPBLOCKSHIFT;
-    let yh = (unsafe { tmbbox[BOXTOP].0 } - orgy.0 + MAXRADIUS.0) >> MAPBLOCKSHIFT;
+    // SAFETY: single-threaded access to consolidated MS.
+    let (xl, xh, yl, yh) = unsafe {
+        (
+            (MS.tmbbox[BOXLEFT].0 - orgx.0 - MAXRADIUS.0) >> MAPBLOCKSHIFT,
+            (MS.tmbbox[BOXRIGHT].0 - orgx.0 + MAXRADIUS.0) >> MAPBLOCKSHIFT,
+            (MS.tmbbox[BOXBOTTOM].0 - orgy.0 - MAXRADIUS.0) >> MAPBLOCKSHIFT,
+            (MS.tmbbox[BOXTOP].0 - orgy.0 + MAXRADIUS.0) >> MAPBLOCKSHIFT,
+        )
+    };
 
     // Collect thing indices from all relevant blockmap cells, then process.
     let mut all_thing_indices: Vec<usize> = Vec::new();
@@ -789,7 +984,7 @@ pub fn p_check_position(
         match action {
             ThingAction::SkullSlam { attacker, target } => {
                 // Compute damage with P_Random (now we have mut access).
-                let info_damage = unsafe { tm_info_damage };
+                let info_damage = unsafe { MS.tm_info_damage };
                 let rng_val = (ctx.rng_mut().p_random() % 8 + 1) as i32;
                 let damage = rng_val * info_damage;
                 ctx.p_damage_mobj(target, Some(attacker), Some(attacker), damage);
@@ -801,7 +996,7 @@ pub fn p_check_position(
                     mo.momy = Fixed::ZERO;
                     mo.momz = Fixed::ZERO;
                 }
-                let spawn_st = unsafe { tm_info_spawnstate };
+                let spawn_st = unsafe { MS.tm_info_spawnstate };
                 ctx.p_set_mobj_state(attacker, spawn_st);
                 return false;
             }
@@ -810,7 +1005,7 @@ pub fn p_check_position(
                 inflictor,
                 source,
             } => {
-                let info_damage = unsafe { tm_info_damage };
+                let info_damage = unsafe { MS.tm_info_damage };
                 let rng_val = (ctx.rng_mut().p_random() % 8 + 1) as i32;
                 let damage = rng_val * info_damage;
                 ctx.p_damage_mobj(target, Some(inflictor), source, damage);
@@ -829,10 +1024,14 @@ pub fn p_check_position(
 
     // --- Line iteration ---
     let cur_vc = ctx.validcount();
-    let xl_line = (unsafe { tmbbox[BOXLEFT].0 } - orgx.0) >> MAPBLOCKSHIFT;
-    let xh_line = (unsafe { tmbbox[BOXRIGHT].0 } - orgx.0) >> MAPBLOCKSHIFT;
-    let yl_line = (unsafe { tmbbox[BOXBOTTOM].0 } - orgy.0) >> MAPBLOCKSHIFT;
-    let yh_line = (unsafe { tmbbox[BOXTOP].0 } - orgy.0) >> MAPBLOCKSHIFT;
+    let (xl_line, xh_line, yl_line, yh_line) = unsafe {
+        (
+            (MS.tmbbox[BOXLEFT].0 - orgx.0) >> MAPBLOCKSHIFT,
+            (MS.tmbbox[BOXRIGHT].0 - orgx.0) >> MAPBLOCKSHIFT,
+            (MS.tmbbox[BOXBOTTOM].0 - orgy.0) >> MAPBLOCKSHIFT,
+            (MS.tmbbox[BOXTOP].0 - orgy.0) >> MAPBLOCKSHIFT,
+        )
+    };
 
     for bx in xl_line..=xh_line {
         for by in yl_line..=yh_line {
@@ -862,7 +1061,7 @@ pub fn p_check_position(
 /// Returns `true` if the move succeeded.
 pub fn p_try_move(thing_idx: usize, x: Fixed, y: Fixed, ctx: &mut dyn MovementContext) -> bool {
     unsafe {
-        floatok = false;
+        MS.floatok = false;
     }
 
     if !p_check_position(thing_idx, x, y, ctx) {
@@ -873,29 +1072,33 @@ pub fn p_try_move(thing_idx: usize, x: Fixed, y: Fixed, ctx: &mut dyn MovementCo
     let mo_height = ctx.mobjs()[thing_idx].height;
     let mo_z = ctx.mobjs()[thing_idx].z;
 
+    // SAFETY: single-threaded access to consolidated MS.
     if !mo_flags.contains(MobjFlags::MF_NOCLIP) {
         unsafe {
             // Doesn't fit vertically.
-            if tmceilingz.0 - tmfloorz.0 < mo_height.0 {
+            if MS.tmceilingz.0 - MS.tmfloorz.0 < mo_height.0 {
                 return false;
             }
 
-            floatok = true;
+            MS.floatok = true;
 
             // Mobj must lower itself to fit under ceiling.
-            if !mo_flags.contains(MobjFlags::MF_TELEPORT) && tmceilingz.0 - mo_z.0 < mo_height.0 {
+            if !mo_flags.contains(MobjFlags::MF_TELEPORT) && MS.tmceilingz.0 - mo_z.0 < mo_height.0
+            {
                 return false;
             }
 
             // Too big a step up (> 24 map units).
-            if !mo_flags.contains(MobjFlags::MF_TELEPORT) && tmfloorz.0 - mo_z.0 > MAXSTEPHEIGHT.0 {
+            if !mo_flags.contains(MobjFlags::MF_TELEPORT)
+                && MS.tmfloorz.0 - mo_z.0 > MAXSTEPHEIGHT.0
+            {
                 return false;
             }
 
             // Don't stand over a dropoff.
             if !mo_flags.contains(MobjFlags::MF_DROPOFF)
                 && !mo_flags.contains(MobjFlags::MF_FLOAT)
-                && tmfloorz.0 - tmdropoffz.0 > MAXSTEPHEIGHT.0
+                && MS.tmfloorz.0 - MS.tmdropoffz.0 > MAXSTEPHEIGHT.0
             {
                 return false;
             }
@@ -909,9 +1112,10 @@ pub fn p_try_move(thing_idx: usize, x: Fixed, y: Fixed, ctx: &mut dyn MovementCo
     ctx.unset_thing_position(thing_idx);
 
     {
+        let (fz, cz) = unsafe { (MS.tmfloorz, MS.tmceilingz) };
         let mo = &mut ctx.mobjs_mut()[thing_idx];
-        mo.floorz = unsafe { tmfloorz };
-        mo.ceilingz = unsafe { tmceilingz };
+        mo.floorz = fz;
+        mo.ceilingz = cz;
         mo.x = x;
         mo.y = y;
     }
@@ -925,10 +1129,10 @@ pub fn p_try_move(thing_idx: usize, x: Fixed, y: Fixed, ctx: &mut dyn MovementCo
         let new_y = ctx.mobjs()[thing_idx].y;
 
         // Collect spechit data before mutating context.
-        let count = unsafe { numspechit };
+        let count = unsafe { MS.numspechit };
         let mut spec_data: Vec<(usize, i16)> = Vec::with_capacity(count);
         for i in (0..count).rev() {
-            let li = unsafe { spechit[i] };
+            let li = unsafe { MS.spechit[i] };
             let special = ctx.lines()[li].special;
             spec_data.push((li, special));
         }
@@ -969,15 +1173,17 @@ pub fn p_thing_height_clip(thing_idx: usize, ctx: &mut dyn MovementContext) -> b
     p_check_position(thing_idx, thing_x, thing_y, ctx);
 
     // Update floorz / ceilingz from the check results.
+    // SAFETY: single-threaded access to consolidated MS.
     {
+        let (fz, cz) = unsafe { (MS.tmfloorz, MS.tmceilingz) };
         let mo = &mut ctx.mobjs_mut()[thing_idx];
-        mo.floorz = unsafe { tmfloorz };
-        mo.ceilingz = unsafe { tmceilingz };
+        mo.floorz = fz;
+        mo.ceilingz = cz;
     }
 
     if onfloor {
         // Walking monsters rise and fall with the floor.
-        let new_floor = unsafe { tmfloorz };
+        let new_floor = unsafe { MS.tmfloorz };
         ctx.mobjs_mut()[thing_idx].z = new_floor;
     } else {
         // Don't adjust a floating monster unless forced to.
@@ -1003,20 +1209,21 @@ pub fn p_thing_height_clip(thing_idx: usize, ctx: &mut dyn MovementContext) -> b
 /// the projected slide direction.
 fn p_hit_slide_line(ld: &LineDef, ctx: &dyn MovementContext) {
     // Axis-aligned fast paths.
+    // SAFETY: single-threaded access to consolidated MS.
     if ld.slopetype == SlopeType::Horizontal {
         unsafe {
-            tmymove = Fixed::ZERO;
+            MS.tmymove = Fixed::ZERO;
         }
         return;
     }
     if ld.slopetype == SlopeType::Vertical {
         unsafe {
-            tmxmove = Fixed::ZERO;
+            MS.tmxmove = Fixed::ZERO;
         }
         return;
     }
 
-    let smo_idx = unsafe { slidemo_idx.unwrap() };
+    let smo_idx = unsafe { MS.slidemo_idx.unwrap() };
     let (sx, sy) = {
         let mo = &ctx.mobjs()[smo_idx];
         (mo.x, mo.y)
@@ -1030,8 +1237,8 @@ fn p_hit_slide_line(ld: &LineDef, ctx: &dyn MovementContext) {
         lineangle = Angle(lineangle.0.wrapping_add(ANG180.0));
     }
 
-    let cur_tmxmove = unsafe { tmxmove };
-    let cur_tmymove = unsafe { tmymove };
+    let cur_tmxmove = unsafe { MS.tmxmove };
+    let cur_tmymove = unsafe { MS.tmymove };
 
     let moveangle = point_to_angle2(Fixed::ZERO, Fixed::ZERO, cur_tmxmove, cur_tmymove);
     let mut deltaangle = Angle(moveangle.0.wrapping_sub(lineangle.0));
@@ -1047,8 +1254,8 @@ fn p_hit_slide_line(ld: &LineDef, ctx: &dyn MovementContext) {
     let newlen = movelen.fixed_mul(finecosine(deltaangle_fine & FINEMASK));
 
     unsafe {
-        tmxmove = newlen.fixed_mul(finecosine(lineangle_fine & FINEMASK));
-        tmymove = newlen.fixed_mul(FINESINE[lineangle_fine & FINEMASK]);
+        MS.tmxmove = newlen.fixed_mul(finecosine(lineangle_fine & FINEMASK));
+        MS.tmymove = newlen.fixed_mul(FINESINE[lineangle_fine & FINEMASK]);
     }
 }
 
@@ -1071,35 +1278,34 @@ fn ptr_slide_traverse(intercept: &Intercept) -> bool {
         }
     };
 
-    // Read the LineDef from the raw pointer stash.
-    let li = unsafe {
-        assert!(!SLIDE_LINES_PTR.is_null());
-        let slice = std::slice::from_raw_parts(SLIDE_LINES_PTR, SLIDE_LINES_LEN);
-        slice[line_idx]
-    };
+    // SAFETY: single-threaded; MS is the consolidated movement state.
+    // Raw pointer stashes are set by p_slide_move before traversal.
+    let li = unsafe { MS.slide_lines()[line_idx] };
 
     let is_two_sided = (li.flags & LineFlags::ML_TWOSIDED.bits()) != 0;
 
     if !is_two_sided {
         // One-sided line — don't hit the back side.
-        let verts = unsafe { std::slice::from_raw_parts(SLIDE_VERTEXES_PTR, SLIDE_VERTEXES_LEN) };
-        let side = p_point_on_line_side(unsafe { SLIDE_MO_X }, unsafe { SLIDE_MO_Y }, &li, verts);
+        let verts = unsafe { MS.slide_vertexes() };
+        let (sx, sy) = unsafe { (MS.slide_mo_x, MS.slide_mo_y) };
+        let side = p_point_on_line_side(sx, sy, &li, verts);
         if side == 1 {
             return true; // back side, ignore
         }
         // Fall through to "is blocking".
     } else {
-        // Two-sided line — check opening.
-        let sectors = unsafe { std::slice::from_raw_parts(SLIDE_SECTORS_PTR, SLIDE_SECTORS_LEN) };
-        p_line_opening(&li, sectors);
+        // Two-sided line — check opening via embedded MapUtilState.
+        let sectors = unsafe { MS.slide_sectors() };
+        // SAFETY: p_line_opening writes to MS.map_util fields.
+        unsafe { p_line_opening(&mut MS.map_util, &li, sectors) };
 
-        let mo_height = unsafe { SLIDE_MO_HEIGHT };
-        let mo_z = unsafe { SLIDE_MO_Z };
+        let mo_height = unsafe { MS.slide_mo_height };
+        let mo_z = unsafe { MS.slide_mo_z };
 
         unsafe {
-            if maputl::openrange.0 >= mo_height.0
-                && maputl::opentop.0 - mo_z.0 >= mo_height.0
-                && maputl::openbottom.0 - mo_z.0 <= MAXSTEPHEIGHT.0
+            if MS.map_util.openrange.0 >= mo_height.0
+                && MS.map_util.opentop.0 - mo_z.0 >= mo_height.0
+                && MS.map_util.openbottom.0 - mo_z.0 <= MAXSTEPHEIGHT.0
             {
                 // This line doesn't block movement.
                 return true;
@@ -1110,11 +1316,11 @@ fn ptr_slide_traverse(intercept: &Intercept) -> bool {
 
     // The line blocks movement — see if it is closer than best so far.
     unsafe {
-        if intercept.frac.0 < bestslidefrac.0 {
-            secondslidefrac = bestslidefrac;
-            secondslideline = bestslideline;
-            bestslidefrac = intercept.frac;
-            bestslideline = Some(line_idx);
+        if intercept.frac.0 < MS.bestslidefrac.0 {
+            MS.secondslidefrac = MS.bestslidefrac;
+            MS.secondslideline = MS.bestslideline;
+            MS.bestslidefrac = intercept.frac;
+            MS.bestslideline = Some(line_idx);
         }
     }
 
@@ -1131,23 +1337,24 @@ fn ptr_slide_traverse(intercept: &Intercept) -> bool {
 /// first blocking wall, moves up to it, then clips the remaining
 /// movement along the wall surface. Retries up to 3 times.
 pub fn p_slide_move(mo_idx: usize, ctx: &mut dyn MovementContext) {
+    // SAFETY: single-threaded access to consolidated MS.
     unsafe {
-        slidemo_idx = Some(mo_idx);
+        MS.slidemo_idx = Some(mo_idx);
     }
 
-    // Set up raw pointer stashes for PTR_SlideTraverse.
+    // Set up raw pointer stashes for ptr_slide_traverse.
     unsafe {
         let lines = ctx.lines();
-        SLIDE_LINES_PTR = lines.as_ptr();
-        SLIDE_LINES_LEN = lines.len();
+        MS.slide_lines_ptr = lines.as_ptr();
+        MS.slide_lines_len = lines.len();
 
         let sectors = ctx.sectors();
-        SLIDE_SECTORS_PTR = sectors.as_ptr();
-        SLIDE_SECTORS_LEN = sectors.len();
+        MS.slide_sectors_ptr = sectors.as_ptr();
+        MS.slide_sectors_len = sectors.len();
 
         let verts = ctx.vertexes();
-        SLIDE_VERTEXES_PTR = verts.as_ptr();
-        SLIDE_VERTEXES_LEN = verts.len();
+        MS.slide_vertexes_ptr = verts.as_ptr();
+        MS.slide_vertexes_len = verts.len();
     }
 
     let mut hitcount: i32 = 0;
@@ -1164,6 +1371,9 @@ pub fn p_slide_move(mo_idx: usize, ctx: &mut dyn MovementContext) {
             let momy = mo.momy;
             if !p_try_move(mo_idx, mox, Fixed(moy.0 + momy.0), ctx) {
                 p_try_move(mo_idx, Fixed(mox.0 + momx.0), moy, ctx);
+            }
+            unsafe {
+                MS.clear_slide_pointers();
             }
             return;
         }
@@ -1190,15 +1400,15 @@ pub fn p_slide_move(mo_idx: usize, ctx: &mut dyn MovementContext) {
             }
 
             unsafe {
-                SLIDE_MO_X = mo.x;
-                SLIDE_MO_Y = mo.y;
-                SLIDE_MO_Z = mo.z;
-                SLIDE_MO_HEIGHT = mo.height;
+                MS.slide_mo_x = mo.x;
+                MS.slide_mo_y = mo.y;
+                MS.slide_mo_z = mo.z;
+                MS.slide_mo_height = mo.height;
             }
         }
 
         unsafe {
-            bestslidefrac = Fixed(FRACUNIT + 1);
+            MS.bestslidefrac = Fixed(FRACUNIT + 1);
         }
 
         // Three path-traverse calls along leading/trailing corners.
@@ -1225,7 +1435,7 @@ pub fn p_slide_move(mo_idx: usize, ctx: &mut dyn MovementContext) {
         );
 
         // Move up to the wall.
-        if unsafe { bestslidefrac.0 } == FRACUNIT + 1 {
+        if unsafe { MS.bestslidefrac.0 } == FRACUNIT + 1 {
             // The move must have hit the middle — stairstep.
             let mo = &ctx.mobjs()[mo_idx];
             let mox = mo.x;
@@ -1235,16 +1445,19 @@ pub fn p_slide_move(mo_idx: usize, ctx: &mut dyn MovementContext) {
             if !p_try_move(mo_idx, mox, Fixed(moy.0 + mmy.0), ctx) {
                 p_try_move(mo_idx, Fixed(mox.0 + mmx.0), moy, ctx);
             }
+            unsafe {
+                MS.clear_slide_pointers();
+            }
             return;
         }
 
         // Fudge a bit to make sure it doesn't touch the wall.
         unsafe {
-            bestslidefrac = Fixed(bestslidefrac.0 - SLIDE_FUDGE);
+            MS.bestslidefrac = Fixed(MS.bestslidefrac.0 - SLIDE_FUDGE);
         }
-        if unsafe { bestslidefrac.0 } > 0 {
-            let newx = momx.fixed_mul(unsafe { bestslidefrac });
-            let newy = momy.fixed_mul(unsafe { bestslidefrac });
+        if unsafe { MS.bestslidefrac.0 } > 0 {
+            let newx = momx.fixed_mul(unsafe { MS.bestslidefrac });
+            let newy = momy.fixed_mul(unsafe { MS.bestslidefrac });
 
             let mo_x = ctx.mobjs()[mo_idx].x;
             let mo_y = ctx.mobjs()[mo_idx].y;
@@ -1258,28 +1471,32 @@ pub fn p_slide_move(mo_idx: usize, ctx: &mut dyn MovementContext) {
                 if !p_try_move(mo_idx, mx2, Fixed(my2.0 + mmy2.0), ctx) {
                     p_try_move(mo_idx, Fixed(mx2.0 + mmx2.0), my2, ctx);
                 }
+                unsafe {
+                    MS.clear_slide_pointers();
+                }
                 return;
             }
         }
 
         // Now continue along the wall — calculate remainder.
         unsafe {
-            bestslidefrac = Fixed(FRACUNIT - (bestslidefrac.0 + SLIDE_FUDGE));
-            if bestslidefrac.0 > FRACUNIT {
-                bestslidefrac = Fixed(FRACUNIT);
+            MS.bestslidefrac = Fixed(FRACUNIT - (MS.bestslidefrac.0 + SLIDE_FUDGE));
+            if MS.bestslidefrac.0 > FRACUNIT {
+                MS.bestslidefrac = Fixed(FRACUNIT);
             }
-            if bestslidefrac.0 <= 0 {
+            if MS.bestslidefrac.0 <= 0 {
+                MS.clear_slide_pointers();
                 return;
             }
         }
 
         unsafe {
-            tmxmove = momx.fixed_mul(bestslidefrac);
-            tmymove = momy.fixed_mul(bestslidefrac);
+            MS.tmxmove = momx.fixed_mul(MS.bestslidefrac);
+            MS.tmymove = momy.fixed_mul(MS.bestslidefrac);
         }
 
         // Clip the remainder along the wall.
-        let bsl = unsafe { bestslideline };
+        let bsl = unsafe { MS.bestslideline };
         if let Some(line_idx) = bsl {
             let ld = ctx.lines()[line_idx]; // LineDef is Copy
             p_hit_slide_line(&ld, ctx);
@@ -1288,14 +1505,14 @@ pub fn p_slide_move(mo_idx: usize, ctx: &mut dyn MovementContext) {
         // Update mobj momentum.
         {
             let mo = &mut ctx.mobjs_mut()[mo_idx];
-            mo.momx = unsafe { tmxmove };
-            mo.momy = unsafe { tmymove };
+            mo.momx = unsafe { MS.tmxmove };
+            mo.momy = unsafe { MS.tmymove };
         }
 
         let mo_x = ctx.mobjs()[mo_idx].x;
         let mo_y = ctx.mobjs()[mo_idx].y;
-        let new_tmx = unsafe { tmxmove };
-        let new_tmy = unsafe { tmymove };
+        let new_tmx = unsafe { MS.tmxmove };
+        let new_tmy = unsafe { MS.tmymove };
         if !p_try_move(
             mo_idx,
             Fixed(mo_x.0 + new_tmx.0),
@@ -1307,6 +1524,9 @@ pub fn p_slide_move(mo_idx: usize, ctx: &mut dyn MovementContext) {
         }
 
         // Successful slide move.
+        unsafe {
+            MS.clear_slide_pointers();
+        }
         return;
     }
 }

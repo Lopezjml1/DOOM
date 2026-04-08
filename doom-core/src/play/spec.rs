@@ -1881,11 +1881,10 @@ pub fn p_update_specials(ctx: &mut dyn SpecContext) {
 // Translated from lines 1163-1221 of p_spec.c
 // ============================================================================
 
-/// Execute a donut special: raises one sector's floor and lowers the
-/// surrounding ring sector. Tag-based sector search.
+/// Execute a donut special (p_spec.c EV_DoDonut).
 ///
-/// s1 = tagged sector (the "hole" — will be raised)
-/// s2 = donut ring sector (surrounding s1 — will be lowered)
+/// s1 = tagged sector (the "hole" — will be LOWERED to s3's floor height)
+/// s2 = donut ring sector (surrounding s1 — will be RAISED to s3's floor height)
 /// s3 = outer sector (surrounding s2 — provides target height and texture)
 pub fn ev_do_donut(line_idx: usize, ctx: &mut dyn SpecContext) -> bool {
     let mut rtn = false;
@@ -1977,30 +1976,24 @@ pub fn ev_do_donut(line_idx: usize, ctx: &mut dyn SpecContext) -> bool {
             };
         }
 
-        // Read target values from s3 and s1
+        // Read target values from s3
         let s3_floorheight;
         let s3_floorpic;
-        let s1_floorheight;
 
         {
             let s3 = &ctx.sectors()[s3_idx];
             s3_floorheight = s3.floorheight;
             s3_floorpic = s3.floorpic;
         }
-        {
-            let s1 = &ctx.sectors()[s1_idx];
-            s1_floorheight = s1.floorheight;
-        }
 
-        // Spawn floor mover for s1 (raise to s3 height, change texture)
-        // In the original C, thinker.function is set to T_MoveFloor after P_AddThinker.
-        let floor1 = FloorMoveT {
+        // C: "Spawn rising slime" — floor mover for s2 (ring RAISES to s3 height)
+        let floor_ring = FloorMoveT {
             thinker: Thinker {
                 prev: None,
                 next: None,
                 function: ActionFn::MoveFloor,
             },
-            sector: s1_idx,
+            sector: s2_idx,
             floor_type: FloorType::DonutRaise,
             crush: false,
             direction: 1,
@@ -2009,27 +2002,27 @@ pub fn ev_do_donut(line_idx: usize, ctx: &mut dyn SpecContext) -> bool {
             floordestheight: s3_floorheight,
             speed: Fixed::new(FLOORSPEED / 2),
         };
-        ctx.p_add_thinker_floor(floor1);
-        ctx.sectors_mut()[s1_idx].specialdata = Some(s1_idx); // Mark as active
+        ctx.p_add_thinker_floor(floor_ring);
+        ctx.sectors_mut()[s2_idx].specialdata = Some(s2_idx); // Mark as active
 
-        // Spawn floor mover for s2 (lower to s1's original height)
-        let floor2 = FloorMoveT {
+        // C: "Spawn lowering donut-hole" — floor mover for s1 (hole LOWERS to s3 height)
+        let floor_hole = FloorMoveT {
             thinker: Thinker {
                 prev: None,
                 next: None,
                 function: ActionFn::MoveFloor,
             },
-            sector: s2_idx,
+            sector: s1_idx,
             floor_type: FloorType::LowerFloor,
             crush: false,
             direction: -1,
             newsecspecial: 0,
             newtexture: s3_floorpic,
-            floordestheight: s1_floorheight,
+            floordestheight: s3_floorheight,
             speed: Fixed::new(FLOORSPEED / 2),
         };
-        ctx.p_add_thinker_floor(floor2);
-        ctx.sectors_mut()[s2_idx].specialdata = Some(s2_idx); // Mark as active
+        ctx.p_add_thinker_floor(floor_hole);
+        ctx.sectors_mut()[s1_idx].specialdata = Some(s1_idx); // Mark as active
     }
 
     rtn

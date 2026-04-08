@@ -909,14 +909,14 @@ pub fn am_responder(
                 match ev.data1 {
                     x if x == AM_PANRIGHTKEY => {
                         if !state.followplayer {
-                            state.m_paninc.x = Fixed::new(ftom(F_PANINC, state.scale_mtof).0);
+                            state.m_paninc.x = Fixed::new(ftom(F_PANINC, state.scale_ftom).0);
                         } else {
                             rc = false;
                         }
                     }
                     x if x == AM_PANLEFTKEY => {
                         if !state.followplayer {
-                            state.m_paninc.x = Fixed::new(-ftom(F_PANINC, state.scale_mtof).0);
+                            state.m_paninc.x = Fixed::new(-ftom(F_PANINC, state.scale_ftom).0);
                         } else {
                             rc = false;
                         }

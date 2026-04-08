@@ -433,6 +433,25 @@ pub struct Player {
     /// Used to determine whether to show "secret level completed" on the
     /// intermission screen's world map.
     pub didsecret: bool,
+
+    // -- Cached mobj position for HUD/cheat display --
+    // These are copied from the player's map object each tic so that
+    // subsystems without direct mobj array access (e.g., status bar
+    // cheat handlers) can read the player's position.
+    /// Cached map-object X coordinate (fixed-point).
+    ///
+    /// Updated from `mo->x` each tic by the player think logic.
+    pub mo_x: Fixed,
+
+    /// Cached map-object Y coordinate (fixed-point).
+    ///
+    /// Updated from `mo->y` each tic by the player think logic.
+    pub mo_y: Fixed,
+
+    /// Cached map-object facing angle (BAM).
+    ///
+    /// Updated from `mo->angle` each tic by the player think logic.
+    pub mo_angle: u32,
 }
 
 impl Default for Player {
@@ -478,6 +497,9 @@ impl Default for Player {
             colormap: 0,
             psprites: [PspDef::default(); NUMPSPRITES],
             didsecret: false,
+            mo_x: Fixed::default(),
+            mo_y: Fixed::default(),
+            mo_angle: 0,
         }
     }
 }

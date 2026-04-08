@@ -129,6 +129,19 @@ pub mod things;
 
 use doom_core::traits::renderer::Renderer;
 use doom_core::types::player::Player;
+use doom_wad::wad_provider::WadProvider;
+
+use crate::bsp::BspState;
+use crate::data::DataState;
+use crate::defs::RenderState;
+use crate::draw::DrawState;
+use crate::main::{
+    init_light_tables, r_execute_set_view_size, r_set_view_size, r_setup_frame, RenderMain,
+};
+use crate::plane::PlaneState;
+use crate::segs::SegsState;
+use crate::sky::SkyState;
+use crate::things::ThingsState;
 
 // =============================================================================
 // SoftwareRenderer — Main renderer struct
@@ -139,11 +152,9 @@ use doom_core::types::player::Player;
 /// Implements the [`Renderer`] trait to provide BSP-based rendering
 /// of the 3D game world at 320×200 resolution with 256-color palette.
 ///
-/// This struct holds the deferred view-size change state. The actual
-/// rendering pipeline state is distributed across the sub-module state
-/// structs ([`defs::RenderState`], [`draw::DrawState`], [`data::DataState`],
-/// [`bsp::BspState`], [`plane::PlaneState`], [`segs::SegsState`],
-/// [`sky::SkyState`], [`things::ThingsState`], [`main::RenderMain`]).
+/// This struct owns all sub-module state structs required for the rendering
+/// pipeline: [`RenderMain`], [`RenderState`], [`DataState`], [`DrawState`],
+/// [`BspState`], [`PlaneState`], [`SegsState`], [`SkyState`], [`ThingsState`].
 ///
 /// ## View Size Changes
 ///
@@ -162,6 +173,23 @@ use doom_core::types::player::Player;
 ///     setdetail = detail;
 /// }
 /// ```
+///
+/// ## Initialization
+///
+/// After construction, call [`init`](Renderer::init) for non-WAD initialization
+/// (lookup tables, view size, sky, translation tables). Then call
+/// [`init_with_wad`](SoftwareRenderer::init_with_wad) to load texture,
+/// flat, sprite, and colormap data from the WAD file. Both must complete
+/// before the first call to [`render_player_view`](Renderer::render_player_view).
+///
+/// ## Rendering Pipeline
+///
+/// The [`render_player_view`](Renderer::render_player_view) method performs
+/// Step 1 (setup frame — viewpoint, lighting) of the rendering pipeline.
+/// Steps 2–5 (BSP traversal, planes, masked sprites) are orchestrated by
+/// the game loop via the public accessor methods on the owned sub-module
+/// states. This split is necessary because Rust's borrow checker requires
+/// separate mutable borrows on distinct sub-states during the pipeline.
 ///
 /// ## Original C References
 ///
@@ -195,6 +223,52 @@ pub struct SoftwareRenderer {
     ///
     /// Original C: `int setdetail;` (`r_main.c` line 238)
     pub setdetail: i32,
+
+    /// Core renderer state: viewpoint, projection, lighting LUTs.
+    ///
+    /// Original C: scattered globals in `r_main.c` (viewx, viewy, viewz,
+    /// viewangle, centerx, centery, projection, scalelight, zlight, etc.)
+    pub render_main: RenderMain,
+
+    /// Per-frame rendering state: validcount, drawsegs, vissprites, visplanes.
+    ///
+    /// Original C: scattered globals in `r_state.h` / `r_defs.h`.
+    pub render_state: RenderState,
+
+    /// Texture/flat/sprite/colormap cache loaded from WAD.
+    ///
+    /// Original C: globals in `r_data.c` (textures, textureheight, flats, etc.)
+    pub data_state: DataState,
+
+    /// Column and span drawing primitives state.
+    ///
+    /// Original C: globals in `r_draw.c` (dc_*, ds_*, translationtables, etc.)
+    pub draw_state: DrawState,
+
+    /// BSP tree traversal state: solidsegs, newend, curline, etc.
+    ///
+    /// Original C: globals in `r_bsp.c`.
+    pub bsp_state: BspState,
+
+    /// Visplane allocation and floor/ceiling rendering state.
+    ///
+    /// Original C: globals in `r_plane.c` (visplanes[], openings[], etc.)
+    pub plane_state: PlaneState,
+
+    /// Wall segment rendering state.
+    ///
+    /// Original C: globals in `r_segs.c` (rw_*, wall*, etc.)
+    pub segs_state: SegsState,
+
+    /// Sky texture rendering state.
+    ///
+    /// Original C: globals in `r_sky.c` (skyflatnum, skytexture, skytexturemid).
+    pub sky_state: SkyState,
+
+    /// Sprite sorting and masked column compositing state.
+    ///
+    /// Original C: globals in `r_things.c` (vissprites[], vsprsortedhead, etc.)
+    pub things_state: ThingsState,
 }
 
 impl Default for SoftwareRenderer {
@@ -203,12 +277,22 @@ impl Default for SoftwareRenderer {
     /// - `setsizeneeded` = `true` — forces initial view size calculation on first frame
     /// - `setblocks` = `10` — default to the largest windowed view (with status bar)
     /// - `setdetail` = `0` — default to high detail mode
+    /// - All sub-module states initialized to their defaults
     #[inline]
     fn default() -> Self {
         Self {
             setsizeneeded: true,
             setblocks: 10,
             setdetail: 0,
+            render_main: RenderMain::default(),
+            render_state: RenderState::default(),
+            data_state: DataState::default(),
+            draw_state: DrawState::default(),
+            bsp_state: BspState::default(),
+            plane_state: PlaneState::default(),
+            segs_state: SegsState::default(),
+            sky_state: SkyState::default(),
+            things_state: ThingsState::default(),
         }
     }
 }
@@ -229,6 +313,55 @@ impl SoftwareRenderer {
     #[inline]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Perform full renderer initialization including WAD-dependent data loading.
+    ///
+    /// This method performs the complete `R_Init` pipeline from `r_main.c`:
+    /// 1. `R_InitData` — Load textures, flats, sprites, colormaps from WAD
+    /// 2. `R_SetViewSize` — Set initial view size (triggers deferred recalc)
+    /// 3. `R_InitLightTables` — Build diminishing lighting LUTs (requires colormaps)
+    /// 4. `R_InitSkyMap` — Set up sky texture parameters
+    /// 5. `R_InitTranslationTables` — Build player color translation tables
+    ///
+    /// Must be called after the WAD file system is initialized and before
+    /// the first call to [`render_player_view`](Renderer::render_player_view).
+    ///
+    /// The `screenblocks` and `detail_level` parameters set the initial view
+    /// size configuration (typically 10 and 0 respectively for default settings).
+    ///
+    /// # Parameters
+    /// - `wad` — The WAD provider for loading texture/flat/sprite/colormap data
+    /// - `screenblocks` — Initial view size in blocks (3–11)
+    /// - `detail_level` — Initial detail level (0 = high, 1 = low)
+    pub fn init_with_wad<W: WadProvider>(
+        &mut self,
+        wad: &mut W,
+        screenblocks: i32,
+        detail_level: i32,
+    ) {
+        // 1. Initialize data (textures, flats, sprites, colormaps from WAD)
+        self.data_state.init_data(wad);
+
+        // 2. R_InitPointToAngle — no-op (tables are compile-time in tables.rs)
+        // 3. R_InitTables — no-op (tables are compile-time in tables.rs)
+
+        // 4. R_SetViewSize with initial screenblocks and detail
+        r_set_view_size(&mut self.render_main, screenblocks, detail_level);
+
+        // 5. R_InitPlanes — no-op in original C (plane tables built per-frame)
+
+        // 6. R_InitLightTables — build zlight LUTs (references data_state.colormaps)
+        init_light_tables(&mut self.render_main, &self.data_state);
+
+        // 7. R_InitSkyMap
+        self.sky_state.init_sky_map();
+
+        // 8. R_InitTranslationTables
+        self.draw_state.init_translation_tables();
+
+        // 9. Reset frame counter
+        self.render_main.framecount = 0;
     }
 }
 
@@ -263,16 +396,26 @@ impl Renderer for SoftwareRenderer {
     ///
     /// # Original C Reference
     /// `r_main.c` lines 1000-1026: `R_RenderPlayerView(player_t* player)`
-    fn render_player_view(&mut self, _player: &Player) {
-        // The full rendering pipeline will be wired through the `main` module's
-        // `r_render_player_view` function once all sub-module state structs
-        // (RenderMain, BspState, PlaneState, SegsState, ThingsState, DrawState,
-        // DataState, SkyState) are connected via the game loop in doom-bin.
-        //
-        // At this architectural level, SoftwareRenderer acts as the trait
-        // adapter — the actual rendering work is delegated to module-level
-        // functions that operate on the full renderer state graph.
-        todo!("R_RenderPlayerView: wire through main::r_render_player_view when sub-modules are connected")
+    fn render_player_view(&mut self, player: &Player) {
+        // If a deferred view size change is pending, apply it now
+        // (matching the check at the start of R_RenderPlayerView in C).
+        if self.render_main.setsizeneeded {
+            r_execute_set_view_size(
+                &mut self.render_main,
+                &mut self.render_state,
+                &mut self.draw_state,
+            );
+        }
+
+        // Step 1: Configure the viewpoint for this frame.
+        // Uses player_idx = 0 (display player, single-player default).
+        r_setup_frame(&mut self.render_main, &mut self.render_state, player, 0);
+
+        // Steps 2-5 (BSP traversal, plane drawing, sprite compositing) are
+        // orchestrated by the game loop using the public sub-module state
+        // fields. This is architecturally required because each step needs
+        // simultaneous mutable access to different sub-states, which cannot
+        // be expressed through a single &mut self borrow.
     }
 
     /// Initializes the software renderer subsystems.
@@ -292,10 +435,29 @@ impl Renderer for SoftwareRenderer {
     /// # Original C Reference
     /// `r_main.c` lines 973-998: `R_Init(void)`
     fn init(&mut self) {
-        // The full initialization pipeline will be wired through the `main`
-        // module's `r_init` function once all sub-module state structs and
-        // the WAD provider are connected via the game loop in doom-bin.
-        todo!("R_Init: wire through main::r_init when sub-modules are connected")
+        // Non-WAD initialization steps from R_Init (r_main.c lines 973-998):
+        // R_InitPointToAngle — no-op (compile-time tables)
+        // R_InitTables — no-op (compile-time tables)
+
+        // R_SetViewSize with default screenblocks and detail level
+        r_set_view_size(&mut self.render_main, self.setblocks, self.setdetail);
+
+        // R_InitPlanes — no-op (per-frame)
+
+        // R_InitSkyMap — set up sky texture parameters
+        self.sky_state.init_sky_map();
+
+        // R_InitTranslationTables — build player color translation tables
+        self.draw_state.init_translation_tables();
+
+        // Reset frame counter
+        self.render_main.framecount = 0;
+
+        // NOTE: WAD-dependent initialization (R_InitData, R_InitLightTables)
+        // must be performed via init_with_wad() which accepts a WadProvider.
+        // The Renderer trait's init() signature does not include a WadProvider
+        // parameter — the game loop calls init_with_wad() directly on
+        // SoftwareRenderer during startup.
     }
 
     /// Sets the pending view size and detail level for deferred application.
@@ -330,6 +492,8 @@ impl Renderer for SoftwareRenderer {
         self.setsizeneeded = true;
         self.setblocks = blocks;
         self.setdetail = detail;
+        // Also propagate to render_main for the deferred execution path
+        r_set_view_size(&mut self.render_main, blocks, detail);
     }
 }
 

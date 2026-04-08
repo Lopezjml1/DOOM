@@ -32,14 +32,13 @@
 //!   [`pit_add_thing_intercepts`], [`p_traverse_intercepts`],
 //!   [`p_path_traverse`])
 //!
-//! # Safety
+//! # State Management
 //!
-//! This module uses `static mut` globals for intercept state, matching the
-//! original C code's use of global variables. These are safe in DOOM's
-//! single-threaded execution model. All access is through `unsafe` blocks.
-
-// Suppress naming warnings for globals that match original C identifiers.
-#![allow(non_upper_case_globals)]
+//! All formerly-global mutable state (intercept buffer, trace divline,
+//! line opening results, early-out flag, path-traverse flags) is consolidated
+//! into the [`MapUtilState`] struct. This struct is passed by mutable reference
+//! through the call chain, matching the AAP §0.7.5 mandate to consolidate
+//! global state into structs. No `static mut` globals are used.
 
 use crate::types::doomtype::MAXINT;
 use crate::types::fixed::{Fixed, FRACBITS, FRACUNIT};
@@ -146,54 +145,87 @@ pub struct Intercept {
 pub type traverser_t = fn(&Intercept) -> bool;
 
 // ==========================================================================
-// Global State (static mut — matches original C globals)
+// Consolidated State (AAP §0.7.5 — no static mut)
 // ==========================================================================
 
-/// Intercept buffer — holds all intercepts found during a path traverse.
-/// Original C: `intercept_t intercepts[MAXINTERCEPTS]` (p_maputl.c:544)
-#[allow(clippy::declare_interior_mutable_const)]
-pub static mut intercepts: [Intercept; MAXINTERCEPTS] = [Intercept {
-    frac: Fixed(0),
-    is_a_line: false,
-    d: InterceptData::Line(0),
-}; MAXINTERCEPTS];
+/// Consolidated map utility state — replaces all formerly-global mutable
+/// variables from the original C `p_maputl.c`.
+///
+/// This struct holds the intercept buffer, trace line, line-opening results,
+/// early-out flag, and path-traverse flags. It is passed by mutable reference
+/// through the collision/movement call chain.
+///
+/// Original C globals consolidated:
+/// - `intercept_t intercepts[MAXINTERCEPTS]` (p_maputl.c:544)
+/// - `intercept_t* intercept_p` (p_maputl.c:545)
+/// - `divline_t trace` (p_maputl.c:547)
+/// - `boolean earlyout` (p_maputl.c:548)
+/// - `int ptflags` (p_maputl.c:549)
+/// - `fixed_t opentop` (p_maputl.c:294)
+/// - `fixed_t openbottom` (p_maputl.c:295)
+/// - `fixed_t openrange` (p_maputl.c:296)
+/// - `fixed_t lowfloor` (p_maputl.c:297)
+#[derive(Debug, Clone)]
+pub struct MapUtilState {
+    /// Intercept buffer — holds all intercepts found during a path traverse.
+    /// Original C: `intercept_t intercepts[MAXINTERCEPTS]` (p_maputl.c:544)
+    pub intercepts: [Intercept; MAXINTERCEPTS],
 
-/// Next free index in the intercepts array (pointer equivalent).
-/// Original C: `intercept_t* intercept_p` (p_maputl.c:545)
-pub static mut intercept_p: usize = 0;
+    /// Next free index in the intercepts array (pointer equivalent).
+    /// Original C: `intercept_t* intercept_p` (p_maputl.c:545)
+    pub intercept_p: usize,
 
-/// The trace line for current intercept operations.
-/// Original C: `divline_t trace` (p_maputl.c:547)
-pub static mut trace: Divline = Divline {
-    x: Fixed(0),
-    y: Fixed(0),
-    dx: Fixed(0),
-    dy: Fixed(0),
-};
+    /// The trace line for current intercept operations.
+    /// Original C: `divline_t trace` (p_maputl.c:547)
+    pub trace: Divline,
 
-/// Early-out flag: if set and a solid line is hit before FRACUNIT, stop.
-/// Original C: `boolean earlyout` (p_maputl.c:548)
-pub static mut earlyout: bool = false;
+    /// Early-out flag: if set and a solid line is hit before FRACUNIT, stop.
+    /// Original C: `boolean earlyout` (p_maputl.c:548)
+    pub earlyout: bool,
 
-/// Path traverse flags (PT_ADDLINES | PT_ADDTHINGS | PT_EARLYOUT).
-/// Original C: `int ptflags` (p_maputl.c:549)
-pub static mut ptflags: i32 = 0;
+    /// Path traverse flags (PT_ADDLINES | PT_ADDTHINGS | PT_EARLYOUT).
+    /// Original C: `int ptflags` (p_maputl.c:549)
+    pub ptflags: i32,
 
-/// Top of the opening through a two-sided line (set by [`p_line_opening`]).
-/// Original C: `fixed_t opentop` (p_maputl.c:294)
-pub static mut opentop: Fixed = Fixed(0);
+    /// Top of the opening through a two-sided line (set by [`p_line_opening`]).
+    /// Original C: `fixed_t opentop` (p_maputl.c:294)
+    pub opentop: Fixed,
 
-/// Bottom of the opening through a two-sided line (set by [`p_line_opening`]).
-/// Original C: `fixed_t openbottom` (p_maputl.c:295)
-pub static mut openbottom: Fixed = Fixed(0);
+    /// Bottom of the opening through a two-sided line (set by [`p_line_opening`]).
+    /// Original C: `fixed_t openbottom` (p_maputl.c:295)
+    pub openbottom: Fixed,
 
-/// Size of the opening: opentop - openbottom (set by [`p_line_opening`]).
-/// Original C: `fixed_t openrange` (p_maputl.c:296)
-pub static mut openrange: Fixed = Fixed(0);
+    /// Size of the opening: opentop - openbottom (set by [`p_line_opening`]).
+    /// Original C: `fixed_t openrange` (p_maputl.c:296)
+    pub openrange: Fixed,
 
-/// Lowest floor on either side of the line (set by [`p_line_opening`]).
-/// Original C: `fixed_t lowfloor` (p_maputl.c:297)
-pub static mut lowfloor: Fixed = Fixed(0);
+    /// Lowest floor on either side of the line (set by [`p_line_opening`]).
+    /// Original C: `fixed_t lowfloor` (p_maputl.c:297)
+    pub lowfloor: Fixed,
+}
+
+impl Default for MapUtilState {
+    fn default() -> Self {
+        Self {
+            intercepts: [Intercept::default(); MAXINTERCEPTS],
+            intercept_p: 0,
+            trace: Divline::default(),
+            earlyout: false,
+            ptflags: 0,
+            opentop: Fixed::ZERO,
+            openbottom: Fixed::ZERO,
+            openrange: Fixed::ZERO,
+            lowfloor: Fixed::ZERO,
+        }
+    }
+}
+
+impl MapUtilState {
+    /// Creates a new `MapUtilState` with all fields zeroed/defaulted.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
 // ==========================================================================
 // P_AproxDistance (p_maputl.c lines 48-58)
@@ -433,43 +465,41 @@ pub fn p_intercept_vector(v2: &Divline, v1: &Divline) -> Fixed {
 ///
 /// # Safety
 ///
-/// Modifies `static mut` globals. Must only be called from the main
-/// game thread.
+/// Compute the opening through a two-sided line, storing results in
+/// `state.opentop`, `state.openbottom`, `state.openrange`, `state.lowfloor`.
 ///
 /// Original C: `P_LineOpening` (p_maputl.c:300-332)
-pub fn p_line_opening(linedef: &LineDef, sectors: &[Sector]) {
-    unsafe {
-        // Single-sided line — no opening
-        if linedef.sidenum[1] == -1 {
-            openrange = Fixed::ZERO;
-            return;
-        }
-
-        let front = &sectors[linedef
-            .frontsector
-            .expect("two-sided line must have frontsector")];
-        let back = &sectors[linedef
-            .backsector
-            .expect("two-sided line must have backsector")];
-
-        // Top of opening: minimum of both ceilings
-        if front.ceilingheight < back.ceilingheight {
-            opentop = front.ceilingheight;
-        } else {
-            opentop = back.ceilingheight;
-        }
-
-        // Bottom of opening and lowest floor
-        if front.floorheight > back.floorheight {
-            openbottom = front.floorheight;
-            lowfloor = back.floorheight;
-        } else {
-            openbottom = back.floorheight;
-            lowfloor = front.floorheight;
-        }
-
-        openrange = opentop - openbottom;
+pub fn p_line_opening(state: &mut MapUtilState, linedef: &LineDef, sectors: &[Sector]) {
+    // Single-sided line — no opening
+    if linedef.sidenum[1] == -1 {
+        state.openrange = Fixed::ZERO;
+        return;
     }
+
+    let front = &sectors[linedef
+        .frontsector
+        .expect("two-sided line must have frontsector")];
+    let back = &sectors[linedef
+        .backsector
+        .expect("two-sided line must have backsector")];
+
+    // Top of opening: minimum of both ceilings
+    if front.ceilingheight < back.ceilingheight {
+        state.opentop = front.ceilingheight;
+    } else {
+        state.opentop = back.ceilingheight;
+    }
+
+    // Bottom of opening and lowest floor
+    if front.floorheight > back.floorheight {
+        state.openbottom = front.floorheight;
+        state.lowfloor = back.floorheight;
+    } else {
+        state.openbottom = back.floorheight;
+        state.lowfloor = front.floorheight;
+    }
+
+    state.openrange = state.opentop - state.openbottom;
 }
 
 // ==========================================================================
@@ -743,76 +773,73 @@ where
 /// If `earlyout` is set and the intercept is before FRACUNIT on a
 /// single-sided line, returns `false` to stop traversal immediately.
 ///
-/// # Safety
-///
-/// Accesses `static mut` globals `trace`, `intercepts`, `intercept_p`,
-/// and `earlyout`.
-///
 /// Original C: `PIT_AddLineIntercepts` (p_maputl.c:561-608)
-pub fn pit_add_line_intercepts(line_idx: usize, ld: &LineDef, vertexes: &[Vertex]) -> bool {
-    unsafe {
-        let v1 = &vertexes[ld.v1];
-        let v2 = &vertexes[ld.v2];
+pub fn pit_add_line_intercepts(
+    state: &mut MapUtilState,
+    line_idx: usize,
+    ld: &LineDef,
+    vertexes: &[Vertex],
+) -> bool {
+    let v1 = &vertexes[ld.v1];
+    let v2 = &vertexes[ld.v2];
 
-        // Copy trace to a local to avoid shared references to mutable static
-        let trace_local = trace;
+    let trace_local = state.trace;
 
-        // Choose side-test method based on trace magnitude to avoid
-        // precision problems (p_maputl.c lines 570-582)
-        let (s1, s2) = if trace_local.dx.0 > FRACUNIT * 16
-            || trace_local.dy.0 > FRACUNIT * 16
-            || trace_local.dx.0 < -(FRACUNIT * 16)
-            || trace_local.dy.0 < -(FRACUNIT * 16)
-        {
-            // Long trace: test line endpoints against the trace divline
-            (
-                p_point_on_divline_side(v1.x, v1.y, &trace_local),
-                p_point_on_divline_side(v2.x, v2.y, &trace_local),
-            )
-        } else {
-            // Short trace: test trace endpoints against the line
-            (
-                p_point_on_line_side(trace_local.x, trace_local.y, ld, vertexes),
-                p_point_on_line_side(
-                    trace_local.x + trace_local.dx,
-                    trace_local.y + trace_local.dy,
-                    ld,
-                    vertexes,
-                ),
-            )
-        };
+    // Choose side-test method based on trace magnitude to avoid
+    // precision problems (p_maputl.c lines 570-582)
+    let (s1, s2) = if trace_local.dx.0 > FRACUNIT * 16
+        || trace_local.dy.0 > FRACUNIT * 16
+        || trace_local.dx.0 < -(FRACUNIT * 16)
+        || trace_local.dy.0 < -(FRACUNIT * 16)
+    {
+        // Long trace: test line endpoints against the trace divline
+        (
+            p_point_on_divline_side(v1.x, v1.y, &trace_local),
+            p_point_on_divline_side(v2.x, v2.y, &trace_local),
+        )
+    } else {
+        // Short trace: test trace endpoints against the line
+        (
+            p_point_on_line_side(trace_local.x, trace_local.y, ld, vertexes),
+            p_point_on_line_side(
+                trace_local.x + trace_local.dx,
+                trace_local.y + trace_local.dy,
+                ld,
+                vertexes,
+            ),
+        )
+    };
 
-        // Line isn't crossed — both endpoints on same side
-        if s1 == s2 {
-            return true;
-        }
-
-        // Hit the line — compute fractional intercept
-        let dl = p_make_divline(ld, vertexes);
-        let frac = p_intercept_vector(&trace_local, &dl);
-
-        // Behind source — ignore
-        if frac.0 < 0 {
-            return true;
-        }
-
-        // Early-out: solid line hit before reaching the target
-        if earlyout && frac.0 < FRACUNIT && ld.backsector.is_none() {
-            return false; // stop checking
-        }
-
-        // Add to intercept buffer
-        if intercept_p < MAXINTERCEPTS {
-            intercepts[intercept_p] = Intercept {
-                frac,
-                is_a_line: true,
-                d: InterceptData::Line(line_idx),
-            };
-            intercept_p += 1;
-        }
-
-        true // continue
+    // Line isn't crossed — both endpoints on same side
+    if s1 == s2 {
+        return true;
     }
+
+    // Hit the line — compute fractional intercept
+    let dl = p_make_divline(ld, vertexes);
+    let frac = p_intercept_vector(&trace_local, &dl);
+
+    // Behind source — ignore
+    if frac.0 < 0 {
+        return true;
+    }
+
+    // Early-out: solid line hit before reaching the target
+    if state.earlyout && frac.0 < FRACUNIT && ld.backsector.is_none() {
+        return false; // stop checking
+    }
+
+    // Add to intercept buffer
+    if state.intercept_p < MAXINTERCEPTS {
+        state.intercepts[state.intercept_p] = Intercept {
+            frac,
+            is_a_line: true,
+            d: InterceptData::Line(line_idx),
+        };
+        state.intercept_p += 1;
+    }
+
+    true // continue
 }
 
 // ==========================================================================
@@ -825,72 +852,69 @@ pub fn pit_add_line_intercepts(line_idx: usize, ld: &LineDef, vertexes: &[Vertex
 /// Selects corner pairs for the cross-check based on the trace direction
 /// sign (positive slope vs negative slope).
 ///
-/// # Safety
-///
-/// Accesses `static mut` globals `trace`, `intercepts`, and `intercept_p`.
-///
 /// Original C: `PIT_AddThingIntercepts` (p_maputl.c:616-674)
-pub fn pit_add_thing_intercepts(thing_idx: usize, thing: &MapObject) -> bool {
-    unsafe {
-        // Copy trace to a local to avoid shared references to mutable static
-        let trace_local = trace;
+pub fn pit_add_thing_intercepts(
+    state: &mut MapUtilState,
+    thing_idx: usize,
+    thing: &MapObject,
+) -> bool {
+    let trace_local = state.trace;
 
-        // Determine corner pair based on trace direction sign
-        // (p_maputl.c lines 632-650)
-        let tracepositive = (trace_local.dx.0 ^ trace_local.dy.0) > 0;
+    // Determine corner pair based on trace direction sign
+    // (p_maputl.c lines 632-650)
+    let tracepositive = (trace_local.dx.0 ^ trace_local.dy.0) > 0;
 
-        let (x1, y1, x2, y2) = if tracepositive {
-            (
-                thing.x - thing.radius, // left
-                thing.y + thing.radius, // top
-                thing.x + thing.radius, // right
-                thing.y - thing.radius, // bottom
-            )
-        } else {
-            (
-                thing.x - thing.radius, // left
-                thing.y - thing.radius, // bottom
-                thing.x + thing.radius, // right
-                thing.y + thing.radius, // top
-            )
-        };
+    let (x1, y1, x2, y2) = if tracepositive {
+        (
+            thing.x - thing.radius, // left
+            thing.y + thing.radius, // top
+            thing.x + thing.radius, // right
+            thing.y - thing.radius, // bottom
+        )
+    } else {
+        (
+            thing.x - thing.radius, // left
+            thing.y - thing.radius, // bottom
+            thing.x + thing.radius, // right
+            thing.y + thing.radius, // top
+        )
+    };
 
-        // Test corner endpoints against the trace divline
-        let s1 = p_point_on_divline_side(x1, y1, &trace_local);
-        let s2 = p_point_on_divline_side(x2, y2, &trace_local);
+    // Test corner endpoints against the trace divline
+    let s1 = p_point_on_divline_side(x1, y1, &trace_local);
+    let s2 = p_point_on_divline_side(x2, y2, &trace_local);
 
-        // Line isn't crossed — both corners on same side
-        if s1 == s2 {
-            return true;
-        }
-
-        // Build divline from corner pair and compute intercept
-        let dl = Divline {
-            x: x1,
-            y: y1,
-            dx: x2 - x1,
-            dy: y2 - y1,
-        };
-
-        let frac = p_intercept_vector(&trace_local, &dl);
-
-        // Behind source — ignore
-        if frac.0 < 0 {
-            return true;
-        }
-
-        // Add to intercept buffer
-        if intercept_p < MAXINTERCEPTS {
-            intercepts[intercept_p] = Intercept {
-                frac,
-                is_a_line: false,
-                d: InterceptData::Thing(thing_idx),
-            };
-            intercept_p += 1;
-        }
-
-        true // keep going
+    // Line isn't crossed — both corners on same side
+    if s1 == s2 {
+        return true;
     }
+
+    // Build divline from corner pair and compute intercept
+    let dl = Divline {
+        x: x1,
+        y: y1,
+        dx: x2 - x1,
+        dy: y2 - y1,
+    };
+
+    let frac = p_intercept_vector(&trace_local, &dl);
+
+    // Behind source — ignore
+    if frac.0 < 0 {
+        return true;
+    }
+
+    // Add to intercept buffer
+    if state.intercept_p < MAXINTERCEPTS {
+        state.intercepts[state.intercept_p] = Intercept {
+            frac,
+            is_a_line: false,
+            d: InterceptData::Thing(thing_idx),
+        };
+        state.intercept_p += 1;
+    }
+
+    true // keep going
 }
 
 // ==========================================================================
@@ -906,48 +930,40 @@ pub fn pit_add_thing_intercepts(thing_idx: usize, thing: &MapObject) -> bool {
 /// Returns `true` if all intercepts within `maxfrac` were traversed
 /// successfully, or `false` if `func` returned `false`.
 ///
-/// # Safety
-///
-/// Accesses `static mut` globals `intercepts` and `intercept_p`.
-///
 /// Original C: `P_TraverseIntercepts` (p_maputl.c:682-730)
-pub fn p_traverse_intercepts(func: traverser_t, maxfrac: Fixed) -> bool {
-    unsafe {
-        let mut count = intercept_p as i32;
+pub fn p_traverse_intercepts(state: &mut MapUtilState, func: traverser_t, maxfrac: Fixed) -> bool {
+    let mut count = state.intercept_p as i32;
 
-        while count > 0 {
-            count -= 1;
+    while count > 0 {
+        count -= 1;
 
-            // Find the intercept with minimum frac (nearest to trace start).
-            // We index directly because `intercepts` is a static mut array;
-            // iterator access would require an additional unsafe reference.
-            let mut dist = Fixed(MAXINT);
-            let mut in_idx: usize = 0;
+        // Find the intercept with minimum frac (nearest to trace start).
+        let mut dist = Fixed(MAXINT);
+        let mut in_idx: usize = 0;
 
-            #[allow(clippy::needless_range_loop)]
-            for scan in 0..intercept_p {
-                if intercepts[scan].frac < dist {
-                    dist = intercepts[scan].frac;
-                    in_idx = scan;
-                }
+        #[allow(clippy::needless_range_loop)]
+        for scan in 0..state.intercept_p {
+            if state.intercepts[scan].frac < dist {
+                dist = state.intercepts[scan].frac;
+                in_idx = scan;
             }
-
-            // Past the requested range — done
-            if dist > maxfrac {
-                return true;
-            }
-
-            // Call the traverser function
-            if !func(&intercepts[in_idx]) {
-                return false; // don't bother going farther
-            }
-
-            // Mark as processed by setting frac to MAXINT
-            intercepts[in_idx].frac = Fixed(MAXINT);
         }
 
-        true // everything was traversed
+        // Past the requested range — done
+        if dist > maxfrac {
+            return true;
+        }
+
+        // Call the traverser function
+        if !func(&state.intercepts[in_idx]) {
+            return false; // don't bother going farther
+        }
+
+        // Mark as processed by setting frac to MAXINT
+        state.intercepts[in_idx].frac = Fixed(MAXINT);
     }
+
+    true // everything was traversed
 }
 
 // ==========================================================================
@@ -971,14 +987,10 @@ pub fn p_traverse_intercepts(func: traverser_t, maxfrac: Fixed) -> bool {
 /// The 64-step safety limit prevents infinite loops from floating-point
 /// rounding errors.
 ///
-/// # Safety
-///
-/// Modifies `static mut` globals `earlyout`, `intercept_p`, `trace`, and
-/// (indirectly via PIT functions) `intercepts`.
-///
 /// Original C: `P_PathTraverse` (p_maputl.c:742-880)
 #[allow(clippy::too_many_arguments)]
 pub fn p_path_traverse(
+    state: &mut MapUtilState,
     mut x1: Fixed,
     mut y1: Fixed,
     x2: Fixed,
@@ -998,166 +1010,166 @@ pub fn p_path_traverse(
     bmapheight: i32,
     validcount: &mut i32,
 ) -> bool {
-    unsafe {
-        // Set early-out flag from flags
-        earlyout = (flags & PT_EARLYOUT) != 0;
+    // Set early-out flag from flags
+    state.earlyout = (flags & PT_EARLYOUT) != 0;
 
-        // Increment validation counter to mark a new traversal pass
-        *validcount += 1;
+    // Increment validation counter to mark a new traversal pass
+    *validcount += 1;
 
-        // Reset intercept buffer
-        intercept_p = 0;
+    // Reset intercept buffer
+    state.intercept_p = 0;
 
-        // Nudge start point off blockmap boundaries to avoid precision
-        // issues with exact boundary alignment (p_maputl.c lines 777-781)
-        if ((x1.0 - bmaporgx.0) & (MAPBLOCKSIZE - 1)) == 0 {
-            x1 = Fixed(x1.0 + FRACUNIT);
-        }
-        if ((y1.0 - bmaporgy.0) & (MAPBLOCKSIZE - 1)) == 0 {
-            y1 = Fixed(y1.0 + FRACUNIT);
-        }
-
-        // Set the trace line
-        trace.x = x1;
-        trace.y = y1;
-        trace.dx = x2 - x1;
-        trace.dy = y2 - y1;
-
-        // Convert to blockmap-relative coordinates
-        let adj_x1 = x1.0 - bmaporgx.0;
-        let adj_y1 = y1.0 - bmaporgy.0;
-        let xt1 = adj_x1 >> MAPBLOCKSHIFT;
-        let yt1 = adj_y1 >> MAPBLOCKSHIFT;
-
-        let adj_x2 = x2.0 - bmaporgx.0;
-        let adj_y2 = y2.0 - bmaporgy.0;
-        let xt2 = adj_x2 >> MAPBLOCKSHIFT;
-        let yt2 = adj_y2 >> MAPBLOCKSHIFT;
-
-        // Calculate step direction and initial partial/intercept values
-        // for the X axis (p_maputl.c lines 798-815)
-        let mapxstep: i32;
-        let partial_x: i32;
-        let ystep: Fixed;
-
-        if xt2 > xt1 {
-            mapxstep = 1;
-            partial_x = FRACUNIT - ((adj_x1 >> MAPBTOFRAC) & (FRACUNIT - 1));
-            let abs_dx = (adj_x2 - adj_x1).abs();
-            ystep = if abs_dx != 0 {
-                Fixed(adj_y2 - adj_y1).fixed_div(Fixed(abs_dx))
-            } else {
-                Fixed(256 * FRACUNIT)
-            };
-        } else if xt2 < xt1 {
-            mapxstep = -1;
-            partial_x = (adj_x1 >> MAPBTOFRAC) & (FRACUNIT - 1);
-            let abs_dx = (adj_x2 - adj_x1).abs();
-            ystep = if abs_dx != 0 {
-                Fixed(adj_y2 - adj_y1).fixed_div(Fixed(abs_dx))
-            } else {
-                Fixed(256 * FRACUNIT)
-            };
-        } else {
-            mapxstep = 0;
-            partial_x = FRACUNIT;
-            ystep = Fixed(256 * FRACUNIT);
-        }
-
-        let mut yintercept: i32 = (adj_y1 >> MAPBTOFRAC) + Fixed(partial_x).fixed_mul(ystep).0;
-
-        // Calculate step direction and initial partial/intercept values
-        // for the Y axis (p_maputl.c lines 820-837)
-        let mapystep: i32;
-        let partial_y: i32;
-        let xstep: Fixed;
-
-        if yt2 > yt1 {
-            mapystep = 1;
-            partial_y = FRACUNIT - ((adj_y1 >> MAPBTOFRAC) & (FRACUNIT - 1));
-            let abs_dy = (adj_y2 - adj_y1).abs();
-            xstep = if abs_dy != 0 {
-                Fixed(adj_x2 - adj_x1).fixed_div(Fixed(abs_dy))
-            } else {
-                Fixed(256 * FRACUNIT)
-            };
-        } else if yt2 < yt1 {
-            mapystep = -1;
-            partial_y = (adj_y1 >> MAPBTOFRAC) & (FRACUNIT - 1);
-            let abs_dy = (adj_y2 - adj_y1).abs();
-            xstep = if abs_dy != 0 {
-                Fixed(adj_x2 - adj_x1).fixed_div(Fixed(abs_dy))
-            } else {
-                Fixed(256 * FRACUNIT)
-            };
-        } else {
-            mapystep = 0;
-            partial_y = FRACUNIT;
-            xstep = Fixed(256 * FRACUNIT);
-        }
-
-        let mut xintercept: i32 = (adj_x1 >> MAPBTOFRAC) + Fixed(partial_y).fixed_mul(xstep).0;
-
-        // Step through map blocks (64-step safety limit)
-        let mut mapx = xt1;
-        let mut mapy = yt1;
-
-        for _count in 0..64 {
-            // Add line intercepts if requested
-            if (flags & PT_ADDLINES) != 0 {
-                let verts = vertexes;
-                let mut line_func = |line_idx: usize, ld: LineDef| -> bool {
-                    pit_add_line_intercepts(line_idx, &ld, verts)
-                };
-                if !p_block_lines_iterator(
-                    mapx,
-                    mapy,
-                    blockmap,
-                    blockmaplump,
-                    lines,
-                    bmapwidth,
-                    bmapheight,
-                    *validcount,
-                    &mut line_func,
-                ) {
-                    return false; // early out
-                }
-            }
-
-            // Add thing intercepts if requested
-            if (flags & PT_ADDTHINGS) != 0 {
-                let mut thing_func = |thing_idx: usize, thing: &MapObject| -> bool {
-                    pit_add_thing_intercepts(thing_idx, thing)
-                };
-                if !p_block_things_iterator(
-                    mapx,
-                    mapy,
-                    blocklinks,
-                    mobjs,
-                    bmapwidth,
-                    bmapheight,
-                    &mut thing_func,
-                ) {
-                    return false; // early out
-                }
-            }
-
-            // Check if we've reached the destination block
-            if mapx == xt2 && mapy == yt2 {
-                break;
-            }
-
-            // Step to the next block using DDA algorithm
-            if (yintercept >> FRACBITS) == mapy {
-                yintercept += ystep.0;
-                mapx += mapxstep;
-            } else if (xintercept >> FRACBITS) == mapx {
-                xintercept += xstep.0;
-                mapy += mapystep;
-            }
-        }
-
-        // Go through the sorted intercept list
-        p_traverse_intercepts(trav, Fixed(FRACUNIT))
+    // Nudge start point off blockmap boundaries to avoid precision
+    // issues with exact boundary alignment (p_maputl.c lines 777-781)
+    if ((x1.0 - bmaporgx.0) & (MAPBLOCKSIZE - 1)) == 0 {
+        x1 = Fixed(x1.0 + FRACUNIT);
     }
+    if ((y1.0 - bmaporgy.0) & (MAPBLOCKSIZE - 1)) == 0 {
+        y1 = Fixed(y1.0 + FRACUNIT);
+    }
+
+    // Set the trace line
+    state.trace.x = x1;
+    state.trace.y = y1;
+    state.trace.dx = x2 - x1;
+    state.trace.dy = y2 - y1;
+
+    // Convert to blockmap-relative coordinates
+    let adj_x1 = x1.0 - bmaporgx.0;
+    let adj_y1 = y1.0 - bmaporgy.0;
+    let xt1 = adj_x1 >> MAPBLOCKSHIFT;
+    let yt1 = adj_y1 >> MAPBLOCKSHIFT;
+
+    let adj_x2 = x2.0 - bmaporgx.0;
+    let adj_y2 = y2.0 - bmaporgy.0;
+    let xt2 = adj_x2 >> MAPBLOCKSHIFT;
+    let yt2 = adj_y2 >> MAPBLOCKSHIFT;
+
+    // Calculate step direction and initial partial/intercept values
+    // for the X axis (p_maputl.c lines 798-815)
+    let mapxstep: i32;
+    let partial_x: i32;
+    let ystep: Fixed;
+
+    if xt2 > xt1 {
+        mapxstep = 1;
+        partial_x = FRACUNIT - ((adj_x1 >> MAPBTOFRAC) & (FRACUNIT - 1));
+        let abs_dx = (adj_x2 - adj_x1).abs();
+        ystep = if abs_dx != 0 {
+            Fixed(adj_y2 - adj_y1).fixed_div(Fixed(abs_dx))
+        } else {
+            Fixed(256 * FRACUNIT)
+        };
+    } else if xt2 < xt1 {
+        mapxstep = -1;
+        partial_x = (adj_x1 >> MAPBTOFRAC) & (FRACUNIT - 1);
+        let abs_dx = (adj_x2 - adj_x1).abs();
+        ystep = if abs_dx != 0 {
+            Fixed(adj_y2 - adj_y1).fixed_div(Fixed(abs_dx))
+        } else {
+            Fixed(256 * FRACUNIT)
+        };
+    } else {
+        mapxstep = 0;
+        partial_x = FRACUNIT;
+        ystep = Fixed(256 * FRACUNIT);
+    }
+
+    let mut yintercept: i32 = (adj_y1 >> MAPBTOFRAC) + Fixed(partial_x).fixed_mul(ystep).0;
+
+    // Calculate step direction and initial partial/intercept values
+    // for the Y axis (p_maputl.c lines 820-837)
+    let mapystep: i32;
+    let partial_y: i32;
+    let xstep: Fixed;
+
+    if yt2 > yt1 {
+        mapystep = 1;
+        partial_y = FRACUNIT - ((adj_y1 >> MAPBTOFRAC) & (FRACUNIT - 1));
+        let abs_dy = (adj_y2 - adj_y1).abs();
+        xstep = if abs_dy != 0 {
+            Fixed(adj_x2 - adj_x1).fixed_div(Fixed(abs_dy))
+        } else {
+            Fixed(256 * FRACUNIT)
+        };
+    } else if yt2 < yt1 {
+        mapystep = -1;
+        partial_y = (adj_y1 >> MAPBTOFRAC) & (FRACUNIT - 1);
+        let abs_dy = (adj_y2 - adj_y1).abs();
+        xstep = if abs_dy != 0 {
+            Fixed(adj_x2 - adj_x1).fixed_div(Fixed(abs_dy))
+        } else {
+            Fixed(256 * FRACUNIT)
+        };
+    } else {
+        mapystep = 0;
+        partial_y = FRACUNIT;
+        xstep = Fixed(256 * FRACUNIT);
+    }
+
+    let mut xintercept: i32 = (adj_x1 >> MAPBTOFRAC) + Fixed(partial_y).fixed_mul(xstep).0;
+
+    // Step through map blocks (64-step safety limit)
+    let mut mapx = xt1;
+    let mut mapy = yt1;
+
+    for _count in 0..64 {
+        // Add line intercepts if requested
+        if (flags & PT_ADDLINES) != 0 {
+            let verts = vertexes;
+            let st = &mut *state;
+            let mut line_func = |line_idx: usize, ld: LineDef| -> bool {
+                pit_add_line_intercepts(st, line_idx, &ld, verts)
+            };
+            if !p_block_lines_iterator(
+                mapx,
+                mapy,
+                blockmap,
+                blockmaplump,
+                lines,
+                bmapwidth,
+                bmapheight,
+                *validcount,
+                &mut line_func,
+            ) {
+                return false; // early out
+            }
+        }
+
+        // Add thing intercepts if requested
+        if (flags & PT_ADDTHINGS) != 0 {
+            let st = &mut *state;
+            let mut thing_func = |thing_idx: usize, thing: &MapObject| -> bool {
+                pit_add_thing_intercepts(st, thing_idx, thing)
+            };
+            if !p_block_things_iterator(
+                mapx,
+                mapy,
+                blocklinks,
+                mobjs,
+                bmapwidth,
+                bmapheight,
+                &mut thing_func,
+            ) {
+                return false; // early out
+            }
+        }
+
+        // Check if we've reached the destination block
+        if mapx == xt2 && mapy == yt2 {
+            break;
+        }
+
+        // Step to the next block using DDA algorithm
+        if (yintercept >> FRACBITS) == mapy {
+            yintercept += ystep.0;
+            mapx += mapxstep;
+        } else if (xintercept >> FRACBITS) == mapx {
+            xintercept += xstep.0;
+            mapy += mapystep;
+        }
+    }
+
+    // Go through the sorted intercept list
+    p_traverse_intercepts(state, trav, Fixed(FRACUNIT))
 }

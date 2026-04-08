@@ -281,9 +281,16 @@ fn load_subsectors(wad: &dyn WadProvider, lump: usize) -> Vec<Subsector> {
 /// Load sector data from the SECTORS WAD lump.
 ///
 /// Each sector record is 26 bytes. Heights are converted from map units (i16)
-/// to 16.16 fixed-point.  Floor and ceiling texture names are stored as raw
-/// indices to be resolved by the renderer later (flat lookup is deferred).
-fn load_sectors(wad: &dyn WadProvider, lump: usize) -> Vec<Sector> {
+/// to 16.16 fixed-point.  Floor and ceiling flat names are resolved to numeric
+/// indices via the provided `flat_num_for_name` callback, matching the original
+/// C behavior where `R_FlatNumForName(ms->floorpic)` is called during load.
+///
+/// Original C: `P_LoadSectors` (p_setup.c lines 228-260).
+fn load_sectors(
+    wad: &dyn WadProvider,
+    lump: usize,
+    flat_num_for_name: &dyn Fn(&str) -> i16,
+) -> Vec<Sector> {
     let data = wad.read_lump(lump);
     let record_size = 26;
     let count = data.len() / record_size;
@@ -294,25 +301,23 @@ fn load_sectors(wad: &dyn WadProvider, lump: usize) -> Vec<Sector> {
         let floorheight = LittleEndian::read_i16(&data[off..]) as i32;
         let ceilingheight = LittleEndian::read_i16(&data[off + 2..]) as i32;
 
-        // Floor and ceiling flat names (8 bytes each) — stored as raw name
-        // strings. In the original C these were passed to R_FlatNumForName;
-        // here we store index 0 as a placeholder to be resolved by the
-        // renderer during R_PrecacheLevel.
-        let _floor_name = read_lump_name(&data[off + 4..off + 12]);
-        let _ceil_name = read_lump_name(&data[off + 12..off + 20]);
+        // Floor and ceiling flat names (8 bytes each) — resolve to flat indices
+        // via callback, matching C: ss->floorpic = R_FlatNumForName(ms->floorpic);
+        let floor_name = read_lump_name(&data[off + 4..off + 12]);
+        let ceil_name = read_lump_name(&data[off + 12..off + 20]);
+
+        let floorpic = flat_num_for_name(&floor_name);
+        let ceilingpic = flat_num_for_name(&ceil_name);
 
         let lightlevel = LittleEndian::read_i16(&data[off + 20..]);
         let special = LittleEndian::read_i16(&data[off + 22..]);
         let tag = LittleEndian::read_i16(&data[off + 24..]);
 
-        // Construct sector with parsed values; remaining fields default.
-        // floorpic / ceilingpic will be resolved by the renderer via
-        // R_FlatNumForName when it initialises flat lookups.
         sectors.push(Sector {
             floorheight: Fixed::new(floorheight << FRACBITS),
             ceilingheight: Fixed::new(ceilingheight << FRACBITS),
-            floorpic: 0,
-            ceilingpic: 0,
+            floorpic,
+            ceilingpic,
             lightlevel,
             special,
             tag,
@@ -595,10 +600,17 @@ fn load_linedefs(
 
 /// Load sidedef data from the SIDEDEFS WAD lump.
 ///
-/// Each record is 30 bytes.  Texture names are stored as raw indices to be
-/// resolved by the renderer (R_TextureNumForName); during loading we store
-/// zero as a placeholder value.
-fn load_sidedefs(wad: &dyn WadProvider, lump: usize) -> Vec<SideDef> {
+/// Each record is 30 bytes.  Texture names are resolved to numeric indices
+/// via the provided `texture_num_for_name` callback, matching the original
+/// C behavior where `R_TextureNumForName(msd->toptexture)` is called during
+/// load.
+///
+/// Original C: `P_LoadSideDefs` (p_setup.c lines 438-463).
+fn load_sidedefs(
+    wad: &dyn WadProvider,
+    lump: usize,
+    texture_num_for_name: &dyn Fn(&str) -> i16,
+) -> Vec<SideDef> {
     let data = wad.read_lump(lump);
     let record_size = 30;
     let count = data.len() / record_size;
@@ -609,21 +621,24 @@ fn load_sidedefs(wad: &dyn WadProvider, lump: usize) -> Vec<SideDef> {
         let textureoffset = LittleEndian::read_i16(&data[off..]) as i32;
         let rowoffset = LittleEndian::read_i16(&data[off + 2..]) as i32;
 
-        // Texture names (8 bytes each) — stored temporarily as names.
-        // In the original C these were passed to R_TextureNumForName;
-        // here they will be resolved when the renderer initialises.
-        let _top_name = read_lump_name(&data[off + 4..off + 12]);
-        let _bottom_name = read_lump_name(&data[off + 12..off + 20]);
-        let _mid_name = read_lump_name(&data[off + 20..off + 28]);
+        // Texture names (8 bytes each) — resolve to texture indices via
+        // callback, matching C: sd->toptexture = R_TextureNumForName(msd->toptexture);
+        let top_name = read_lump_name(&data[off + 4..off + 12]);
+        let bottom_name = read_lump_name(&data[off + 12..off + 20]);
+        let mid_name = read_lump_name(&data[off + 20..off + 28]);
+
+        let toptexture = texture_num_for_name(&top_name);
+        let bottomtexture = texture_num_for_name(&bottom_name);
+        let midtexture = texture_num_for_name(&mid_name);
 
         let sector_idx = LittleEndian::read_i16(&data[off + 28..]) as usize;
 
         sides.push(SideDef {
             textureoffset: Fixed::new(textureoffset << FRACBITS),
             rowoffset: Fixed::new(rowoffset << FRACBITS),
-            toptexture: 0,    // resolved by renderer
-            bottomtexture: 0, // resolved by renderer
-            midtexture: 0,    // resolved by renderer
+            toptexture,
+            bottomtexture,
+            midtexture,
             sector: sector_idx,
         });
     }
@@ -843,6 +858,25 @@ fn p_group_lines(level: &mut LevelData) {
 /// iterating the `MapThing` vector and calling `P_SpawnMapThing` on each
 /// entry, as well as invoking `P_InitThinkers` before loading and
 /// `P_SpawnSpecials` + `R_PrecacheLevel` after loading.
+/// Load and initialise a complete level from WAD lumps.
+///
+/// This is the Rust equivalent of `P_SetupLevel` from p_setup.c (lines 628-712).
+/// The `flat_num_for_name` and `texture_num_for_name` callbacks provide the
+/// equivalent of `R_FlatNumForName` and `R_TextureNumForName` from r_data.c,
+/// resolving 8-character flat/texture names into numeric indices used at
+/// runtime.  In the original C code these were global functions that the
+/// linker resolved; here they are passed as closures so that `doom-core`
+/// does not depend on `doom-render-soft`.
+///
+/// # Parameters
+/// - `episode` / `map` — Level identifiers (E1M1 or MAP01 style).
+/// - `skill` — Difficulty level (filters map things).
+/// - `game_mode` — Selects lump name format and monster filtering.
+/// - `wad` — WAD file provider for reading map lumps.
+/// - `flat_num_for_name` — Resolves a flat name (e.g. "FLOOR0_1") to its
+///   flat index, equivalent to `R_FlatNumForName` in C.
+/// - `texture_num_for_name` — Resolves a texture name (e.g. "STARTAN2") to
+///   its texture index, equivalent to `R_TextureNumForName` in C.
 pub fn setup_level(
     episode: i32,
     map: i32,
@@ -850,6 +884,8 @@ pub fn setup_level(
     skill: Skill,
     game_mode: GameMode,
     wad: &mut dyn WadProvider,
+    flat_num_for_name: &dyn Fn(&str) -> i16,
+    texture_num_for_name: &dyn Fn(&str) -> i16,
 ) -> (LevelData, Vec<MapThing>) {
     info!(
         "P_SetupLevel: loading E{}M{} / MAP{:02} (skill {:?})",
@@ -895,11 +931,15 @@ pub fn setup_level(
     // 2. Vertexes (ML_VERTEXES)
     level.vertexes = load_vertexes(wad, lump_num + MapLump::Vertexes as usize);
 
-    // 3. Sectors (ML_SECTORS)
-    level.sectors = load_sectors(wad, lump_num + MapLump::Sectors as usize);
+    // 3. Sectors (ML_SECTORS) — flat names resolved via callback
+    level.sectors = load_sectors(wad, lump_num + MapLump::Sectors as usize, flat_num_for_name);
 
-    // 4. Sidedefs (ML_SIDEDEFS)
-    level.sides = load_sidedefs(wad, lump_num + MapLump::SideDefs as usize);
+    // 4. Sidedefs (ML_SIDEDEFS) — texture names resolved via callback
+    level.sides = load_sidedefs(
+        wad,
+        lump_num + MapLump::SideDefs as usize,
+        texture_num_for_name,
+    );
 
     // 5. Linedefs (ML_LINEDEFS)
     level.lines = load_linedefs(

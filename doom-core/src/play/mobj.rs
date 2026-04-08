@@ -197,6 +197,12 @@ pub trait MobjContext {
     // --- Ceiling check for missiles ---
     /// Returns the ceiling pic of the sector containing the given subsector.
     fn get_sector_ceilingpic(&self, subsector_idx: usize) -> i16;
+
+    // --- Radius attack ---
+    /// Perform a radius (splash) damage attack centred on `source_idx`, with
+    /// damage attributed to `inflictor_idx` and the given maximum `damage`.
+    /// Original C: `P_RadiusAttack(thing, source, damage)` (p_map.c).
+    fn p_radius_attack(&mut self, source_idx: usize, inflictor_idx: Option<usize>, damage: i32);
 }
 
 // =============================================================================
@@ -262,26 +268,226 @@ pub fn p_set_mobj_state(
     true
 }
 
-/// Dispatch a state action function. This is a placeholder for the full
-/// action dispatch table. In the complete engine, this routes to the
-/// corresponding A_* function based on the ActionFnId.
+/// Dispatch a state action function for a map object.
 ///
-/// Many action functions require the full game context and are implemented
-/// in other modules (p_enemy.rs, p_pspr.rs, etc.). This function handles
-/// the subset of actions that are directly relevant to mobj state transitions.
+/// Routes each [`ActionFnId`] to the corresponding A_* implementation.
+/// Simple mobj-specific actions (A_Fall, A_Explode, A_Pain, A_Scream,
+/// A_XScream, A_PlayerScream) are implemented inline.  Enemy AI actions
+/// (A_Look, A_Chase, etc.) are delegated to `enemy.rs` once that module
+/// is available — until then they emit a one-time trace-level log.
+/// Weapon-sprite actions (A_WeaponReady, A_Lower, etc.) are handled by
+/// the psprite dispatch in `pspr.rs` and should never reach here.
+///
+/// Original C: the `st->action.acp1(mobj)` call in `P_SetMobjState`
+/// (p_mobj.c line 71).
 fn dispatch_state_action(
-    _mobj_idx: usize,
-    _action: ActionFnId,
-    _ctx: &mut dyn MobjContext,
-    _rng: &mut DoomRandom,
+    mobj_idx: usize,
+    action: ActionFnId,
+    ctx: &mut dyn MobjContext,
+    rng: &mut DoomRandom,
 ) {
-    // Action function dispatch is handled by the game loop's central
-    // dispatcher, not here. This function exists as the hook point.
-    // The game loop calls into this module and then dispatches actions
-    // through the full action function table.
-    //
-    // Individual A_* implementations (A_Chase, A_Look, A_Fall, etc.) are
-    // in p_enemy.rs, p_pspr.rs, and other play modules.
+    match action {
+        ActionFnId::None => {}
+
+        // ==================================================================
+        // Death / simple actions — implemented inline
+        // ==================================================================
+
+        // A_Fall: clear MF_SOLID so corpse can be walked over.
+        // Original C: p_enemy.c lines 1599-1603.
+        ActionFnId::A_Fall => {
+            let mobjs = ctx.mobjs_mut();
+            mobjs[mobj_idx].flags.remove(MobjFlags::MF_SOLID);
+        }
+
+        // A_XScream: slop (gib) sound.
+        // Original C: p_enemy.c line 1572.
+        ActionFnId::A_XScream => {
+            ctx.s_start_sound(Some(mobj_idx), SfxEnum::sfx_slop);
+        }
+
+        // A_Pain: play the object's pain sound.
+        // Original C: p_enemy.c lines 1577-1579.
+        ActionFnId::A_Pain => {
+            let painsound = MOBJINFO[ctx.mobjs()[mobj_idx].type_].painsound;
+            if painsound != SfxEnum::sfx_None {
+                ctx.s_start_sound(Some(mobj_idx), painsound);
+            }
+        }
+
+        // A_Scream: play the object's death sound with variation for
+        // zombieman/imp/shotgunner and full volume for Spider/Cyber.
+        // Original C: p_enemy.c lines 1535-1569.
+        ActionFnId::A_Scream => {
+            a_scream(mobj_idx, ctx, rng);
+        }
+
+        // A_PlayerScream: play sfx_pldeth (or sfx_pdiehi in DOOM II
+        // when health < -50 gibbing threshold).
+        // Original C: p_enemy.c lines 1994-2008.
+        ActionFnId::A_PlayerScream => {
+            let health = ctx.mobjs()[mobj_idx].health;
+            let mode = ctx.gamemode();
+            let sound = if mode == GameMode::Commercial && health < -50 {
+                SfxEnum::sfx_pdiehi
+            } else {
+                SfxEnum::sfx_pldeth
+            };
+            ctx.s_start_sound(Some(mobj_idx), sound);
+        }
+
+        // A_Explode: radius attack (128 damage) centred on self, targeting
+        // the object stored in `target` (the attacker for barrels, the firer
+        // for rockets).  Original C: p_enemy.c lines 1610-1613.
+        ActionFnId::A_Explode => {
+            a_explode(mobj_idx, ctx);
+        }
+
+        // ==================================================================
+        // Enemy AI actions — implemented in enemy.rs (future checkpoint).
+        // Until enemy.rs is available, these are logged at trace level.
+        // The dispatch mechanism is in place so that enemy.rs only needs to
+        // provide the function bodies; no dispatch table changes are needed.
+        // ==================================================================
+        ActionFnId::A_Look
+        | ActionFnId::A_Chase
+        | ActionFnId::A_FaceTarget
+        | ActionFnId::A_PosAttack
+        | ActionFnId::A_SPosAttack
+        | ActionFnId::A_CPosAttack
+        | ActionFnId::A_CPosRefire
+        | ActionFnId::A_TroopAttack
+        | ActionFnId::A_SargAttack
+        | ActionFnId::A_HeadAttack
+        | ActionFnId::A_BruisAttack
+        | ActionFnId::A_SkullAttack
+        | ActionFnId::A_SpidRefire
+        | ActionFnId::A_BspiAttack
+        | ActionFnId::A_CyberAttack
+        | ActionFnId::A_PainAttack
+        | ActionFnId::A_PainDie
+        | ActionFnId::A_KeenDie
+        | ActionFnId::A_BossDeath
+        | ActionFnId::A_VileChase
+        | ActionFnId::A_VileStart
+        | ActionFnId::A_VileTarget
+        | ActionFnId::A_VileAttack
+        | ActionFnId::A_StartFire
+        | ActionFnId::A_Fire
+        | ActionFnId::A_FireCrackle
+        | ActionFnId::A_Tracer
+        | ActionFnId::A_SkelWhoosh
+        | ActionFnId::A_SkelFist
+        | ActionFnId::A_SkelMissile
+        | ActionFnId::A_FatRaise
+        | ActionFnId::A_FatAttack1
+        | ActionFnId::A_FatAttack2
+        | ActionFnId::A_FatAttack3
+        | ActionFnId::A_BabyMetal
+        | ActionFnId::A_Hoof
+        | ActionFnId::A_Metal
+        | ActionFnId::A_BrainPain
+        | ActionFnId::A_BrainScream
+        | ActionFnId::A_BrainDie
+        | ActionFnId::A_BrainAwake
+        | ActionFnId::A_BrainSpit
+        | ActionFnId::A_SpawnSound
+        | ActionFnId::A_SpawnFly
+        | ActionFnId::A_BrainExplode => {
+            tracing::trace!(
+                "Action {:?} for mobj {} deferred — enemy.rs not yet available",
+                action,
+                mobj_idx,
+            );
+        }
+
+        // ==================================================================
+        // Weapon-sprite actions — handled by pspr.rs dispatch.
+        // These should never be routed through mobj state dispatch.
+        // ==================================================================
+        ActionFnId::A_Light0
+        | ActionFnId::A_Light1
+        | ActionFnId::A_Light2
+        | ActionFnId::A_WeaponReady
+        | ActionFnId::A_Lower
+        | ActionFnId::A_Raise
+        | ActionFnId::A_Punch
+        | ActionFnId::A_ReFire
+        | ActionFnId::A_FirePistol
+        | ActionFnId::A_FireShotgun
+        | ActionFnId::A_FireShotgun2
+        | ActionFnId::A_CheckReload
+        | ActionFnId::A_OpenShotgun2
+        | ActionFnId::A_LoadShotgun2
+        | ActionFnId::A_CloseShotgun2
+        | ActionFnId::A_FireCGun
+        | ActionFnId::A_GunFlash
+        | ActionFnId::A_FireMissile
+        | ActionFnId::A_Saw
+        | ActionFnId::A_FirePlasma
+        | ActionFnId::A_BFGsound
+        | ActionFnId::A_FireBFG
+        | ActionFnId::A_BFGSpray => {
+            tracing::trace!(
+                "Weapon action {:?} for mobj {} — normally handled by psprite dispatch",
+                action,
+                mobj_idx,
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A_Scream — death sound with random variation for certain enemy types.
+// Original C: p_enemy.c lines 1535-1569.
+// ---------------------------------------------------------------------------
+fn a_scream(mobj_idx: usize, ctx: &mut dyn MobjContext, rng: &mut DoomRandom) {
+    let (deathsound, mobj_type) = {
+        let mo = &ctx.mobjs()[mobj_idx];
+        (MOBJINFO[mo.type_].deathsound, mo.type_)
+    };
+
+    if deathsound == SfxEnum::sfx_None {
+        return;
+    }
+
+    let sound = match deathsound {
+        SfxEnum::sfx_podth1 | SfxEnum::sfx_podth2 | SfxEnum::sfx_podth3 => {
+            // Zombieman / shotgunguy random death sound variation.
+            const SOUNDS: [SfxEnum; 3] = [
+                SfxEnum::sfx_podth1,
+                SfxEnum::sfx_podth2,
+                SfxEnum::sfx_podth3,
+            ];
+            SOUNDS[(rng.p_random() % 3) as usize]
+        }
+        SfxEnum::sfx_bgdth1 | SfxEnum::sfx_bgdth2 => {
+            // Imp random death sound variation.
+            const SOUNDS: [SfxEnum; 2] = [SfxEnum::sfx_bgdth1, SfxEnum::sfx_bgdth2];
+            SOUNDS[(rng.p_random() % 2) as usize]
+        }
+        other => other,
+    };
+
+    // Boss monsters play at full volume (no origin attenuation).
+    let mtype_enum = MobjType::from_index(mobj_type);
+    if mtype_enum == Some(MobjType::MT_SPIDER) || mtype_enum == Some(MobjType::MT_CYBORG) {
+        ctx.s_start_sound(None, sound);
+    } else {
+        ctx.s_start_sound(Some(mobj_idx), sound);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A_Explode — 128-damage radius attack centred on self.
+// Original C: p_enemy.c lines 1610-1613.
+// ---------------------------------------------------------------------------
+fn a_explode(mobj_idx: usize, ctx: &mut dyn MobjContext) {
+    // P_RadiusAttack(thingy, thingy->target, 128)
+    // The target field stores who is responsible for the damage (the firer
+    // for rockets, the attacker for exploding barrels).
+    let target_idx = ctx.mobjs()[mobj_idx].target;
+    ctx.p_radius_attack(mobj_idx, target_idx, 128);
 }
 
 // =============================================================================
@@ -750,8 +956,10 @@ pub fn p_nightmare_respawn(mobj_idx: usize, ctx: &mut dyn MobjContext, rng: &mut
         mo.type_
     };
 
-    // SAFETY: mo_type is valid since it was set during original spawn
-    let mobj_type_enum = unsafe { core::mem::transmute::<usize, MobjType>(mo_type) };
+    // Safe conversion — mo_type was set during the original spawn and is a
+    // valid MobjType discriminant.
+    let mobj_type_enum =
+        MobjType::from_index(mo_type).expect("P_NightmareRespawn: invalid mobj type index");
     let new_mobj = p_spawn_mobj(x, y, new_floorz, mobj_type_enum, ctx, rng);
 
     // Set angle and ambush flag
@@ -1159,8 +1367,8 @@ pub fn p_respawn_specials(ctx: &mut dyn MobjContext, rng: &mut DoomRandom) {
     let mut found_type: Option<MobjType> = None;
     while i < NUMMOBJTYPES {
         if MOBJINFO[i].doomednum == mthing.type_ as i32 {
-            // SAFETY: i is a valid MobjType discriminant since i < NUMMOBJTYPES
-            found_type = Some(unsafe { core::mem::transmute::<usize, MobjType>(i) });
+            // Safe bounds-checked conversion from loop index to MobjType.
+            found_type = MobjType::from_index(i);
             break;
         }
         i += 1;
@@ -1332,30 +1540,23 @@ pub fn p_spawn_map_thing(mthing: &MapThing, ctx: &mut dyn MobjContext, rng: &mut
         return;
     }
 
-    // Skill filter
+    // Skill filter — determine the skill bit to check.
+    // Original C (p_mobj.c lines 714-720):
+    //   if (gameskill == sk_baby) bit = 1;
+    //   else if (gameskill == sk_nightmare) bit = 4;
+    //   else bit = 1 << (gameskill-1);
+    //   if (!(mthing->options & bit)) return;
     let skill = ctx.gameskill();
-    if skill == Skill::Baby || skill == Skill::Nightmare {
-        // Skill::Baby == easy, Nightmare also uses easy bit
-        if mthing.options as i32 & crate::types::doomdef::MTF_EASY == 0 {
-            return;
-        }
+    let skill_bit: i32 = if skill == Skill::Baby {
+        crate::types::doomdef::MTF_EASY // bit 1
     } else if skill == Skill::Nightmare {
-        // Already handled above with Baby
-    } else if skill as i32 <= 1 {
-        // Easy (should be covered above)
-        if mthing.options as i32 & crate::types::doomdef::MTF_EASY == 0 {
-            return;
-        }
-    } else if skill as i32 == 2 {
-        // Medium
-        if mthing.options as i32 & crate::types::doomdef::MTF_NORMAL == 0 {
-            return;
-        }
+        crate::types::doomdef::MTF_HARD // bit 4
     } else {
-        // Hard (skill 3 or 4)
-        if mthing.options as i32 & crate::types::doomdef::MTF_HARD == 0 {
-            return;
-        }
+        1 << (skill as i32 - 1)
+    };
+
+    if mthing.options as i32 & skill_bit == 0 {
+        return;
     }
 
     // Find the mobjinfo entry by doomednum
@@ -1363,7 +1564,8 @@ pub fn p_spawn_map_thing(mthing: &MapThing, ctx: &mut dyn MobjContext, rng: &mut
     let mut found_type: Option<MobjType> = None;
     while i < NUMMOBJTYPES {
         if MOBJINFO[i].doomednum == mthing.type_ as i32 {
-            found_type = Some(unsafe { core::mem::transmute::<usize, MobjType>(i) });
+            // Safe bounds-checked conversion from loop index to MobjType.
+            found_type = MobjType::from_index(i);
             break;
         }
         i += 1;

@@ -1204,12 +1204,13 @@ pub fn p_damage_mobj(
                     (((damage as i64) * ((FRACUNIT >> 3) as i64) * 100) / (mass as i64)) as i32,
                 );
 
-                // Fall-forward mechanic: sometimes make a corpse slide toward the killer
-                // Conditions: damage < 40, damage > health, z height diff > 64*FRACUNIT, random
+                // Fall-forward mechanic: sometimes make a corpse slide toward the killer.
+                // C: if (damage<40 && damage>target->health
+                //     && target->z - inflictor->z > 64*FRACUNIT && (P_Random()&1))
+                // Target must be significantly ABOVE the inflictor.
                 if damage < 40 && damage > tgt_health {
-                    // Check z difference: inflictor z must be significantly above target
                     let inf_z = ctx.mobjs()[inf_idx].z;
-                    let z_diff = Fixed(inf_z.0 - tgt_z.0);
+                    let z_diff = Fixed(tgt_z.0 - inf_z.0);
                     if z_diff.0 > 64 * FRACUNIT {
                         let rng = ctx.rng_mut();
                         if (rng.p_random() & 1) != 0 {
@@ -1364,22 +1365,23 @@ pub fn p_damage_mobj(
     // Retarget to the source of damage if threshold permits
     if let Some(src_idx) = source_idx {
         let threshold = ctx.mobjs()[target_idx].threshold;
-        let current_target = ctx.mobjs()[target_idx].target;
+        let _current_target = ctx.mobjs()[target_idx].target;
 
-        // Don't retarget if already targeting source, or if threshold is active
-        // Special exception: never retarget away from vile (MobjType::MT_VILE)
-        let source_type = mobjtype_from_usize(ctx.mobjs()[src_idx].type_);
-        let is_vile = source_type == Some(MobjType::MT_VILE);
+        // Retarget logic matching C p_inter.c ~904-911:
+        //   if ( (!target->threshold || target->type == MT_VILE)
+        //        && source && source != target
+        //        && source->type != MT_VILE)
+        // Vile targets always retarget (override threshold);
+        // Vile sources never cause retargeting (prevent infighting).
+        let target_type_enum = mobjtype_from_usize(ctx.mobjs()[target_idx].type_);
+        let source_type_enum = mobjtype_from_usize(ctx.mobjs()[src_idx].type_);
+        let target_is_vile = target_type_enum == Some(MobjType::MT_VILE);
+        let source_is_vile = source_type_enum == Some(MobjType::MT_VILE);
 
-        let should_retarget = if threshold != 0 && current_target.is_some() {
-            // Already has a target and threshold is active — only retarget if vile
-            is_vile
-        } else {
-            true
-        };
+        let should_retarget =
+            (threshold == 0 || target_is_vile) && src_idx != target_idx && !source_is_vile;
 
-        // Also retarget if target is the same as source (Vile exception handled above)
-        if should_retarget && src_idx != target_idx {
+        if should_retarget {
             ctx.mobjs_mut()[target_idx].target = Some(src_idx);
             ctx.mobjs_mut()[target_idx].threshold = BASETHRESHOLD;
 

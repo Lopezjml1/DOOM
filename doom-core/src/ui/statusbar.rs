@@ -1679,10 +1679,17 @@ pub fn st_responder(
     // idmypos — Show player position (x, y, angle)
     // -----------------------------------------------------------------------
     if state.cheat_mypos.check_cheat(key) {
-        // In the full engine, this would display coordinates. We set
-        // a generic message since we don't have access to the mobj
-        // position directly from the status bar.
-        player.message = Some("ang=0x0 ;x=0 ;y=0".to_string());
+        // Display the player's current map coordinates and facing angle.
+        // C: sprintf(buf, "ang=0x%x;x,y=(0x%x,0x%x)",
+        //     players[consoleplayer].mo->angle,
+        //     players[consoleplayer].mo->x,
+        //     players[consoleplayer].mo->y);
+        // Uses cached mobj position fields on the Player struct.
+        let msg = format!(
+            "ang=0x{:x};x,y=(0x{:x},0x{:x})",
+            player.mo_angle, player.mo_x.0, player.mo_y.0,
+        );
+        player.message = Some(msg);
         return true;
     }
 

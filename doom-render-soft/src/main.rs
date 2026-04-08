@@ -767,7 +767,7 @@ fn init_texture_mapping(render_main: &mut RenderMain) {
 /// colormap bytes loaded from the WAD COLORMAP lump. Each of the 34 colormaps
 /// is 256 bytes, so `colormaps[level * 256..]` gives the palette remapping for
 /// brightness level `level`. The zlight LUT stores byte offsets into this array.
-fn init_light_tables(render_main: &mut RenderMain, data_state: &DataState) {
+pub fn init_light_tables(render_main: &mut RenderMain, data_state: &DataState) {
     // Validate that colormaps are loaded (at least NUMCOLORMAPS * 256 bytes)
     let _colormaps_len: usize = data_state.colormaps.len();
     // Reference LightTable type to confirm colormaps element type

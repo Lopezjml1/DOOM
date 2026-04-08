@@ -190,6 +190,25 @@ pub enum MobjType {
 /// Total number of map object types.
 pub const NUMMOBJTYPES: usize = 137;
 
+impl MobjType {
+    /// Safely convert a `usize` index to a `MobjType` variant.
+    ///
+    /// Returns `Some(variant)` when `index < NUMMOBJTYPES`, `None` otherwise.
+    /// This replaces scattered `unsafe { transmute }` calls with a single,
+    /// bounds-checked conversion point.
+    #[inline]
+    pub fn from_index(index: usize) -> Option<MobjType> {
+        if index < NUMMOBJTYPES {
+            // SAFETY: `MobjType` is `#[repr(usize)]` with contiguous
+            // discriminants `0..NUMMOBJTYPES` and we have verified that
+            // `index` falls within that range.
+            Some(unsafe { core::mem::transmute::<usize, MobjType>(index) })
+        } else {
+            None
+        }
+    }
+}
+
 // =============================================================================
 // MobjInfo struct (info.h lines 1305-1331)
 // =============================================================================

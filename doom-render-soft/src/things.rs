@@ -43,6 +43,8 @@ use crate::draw::DrawState;
 use crate::main::{
     point_to_angle, ColFunc, RenderMain, LIGHTLEVELS, LIGHTSCALESHIFT, LIGHTSEGSHIFT, MAXLIGHTSCALE,
 };
+use crate::plane::PlaneState;
+use crate::segs::SegsState;
 
 use doom_core::info::sprites::{NUMSPRITES, SPRITE_NAMES};
 use doom_core::info::states::STATES;
@@ -445,12 +447,18 @@ impl ThingsState {
 
         let xscale = render_main.projection.fixed_div(tz);
 
-        let gxt2 = tr_x.fixed_mul(render_main.viewsin);
+        // Recompute gxt/gyt for the X (lateral) projection.
+        // Original C (r_things.c ~503-505):
+        //   gxt = -FixedMul(tr_x, viewsin);
+        //   gyt =  FixedMul(tr_y, viewcos);
+        //   tx  = -(gyt + gxt);
+        let gxt2 = Fixed::new(-tr_x.fixed_mul(render_main.viewsin).raw());
         let gyt2 = tr_y.fixed_mul(render_main.viewcos);
-        let mut tx = -(gxt2 + gyt2);
+        let mut tx = Fixed::new(-(gyt2.raw().wrapping_add(gxt2.raw())));
 
         // Too far off the side?
-        if tx.raw().abs() > (tz.raw() >> 2).wrapping_mul(5) {
+        // Original C: if (abs(tx) > (tz << 2)) return;
+        if tx.raw().abs() > (tz.raw() << 2) {
             return;
         }
 
@@ -1298,10 +1306,11 @@ impl ThingsState {
     /// 4. Draw player weapon sprites on top of everything.
     ///
     /// Original C: `void R_DrawMasked(void)` (r_things.c line 839)
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_masked(
         &mut self,
         draw: &mut DrawState,
-        data: &DataState,
+        data: &mut DataState,
         render_main: &mut RenderMain,
         wad: &mut dyn WadProvider,
         screens: &mut [Vec<u8>],
@@ -1311,6 +1320,9 @@ impl ThingsState {
         render_state: &RenderState,
         players: &[Player],
         mobjs: &[MapObject],
+        segs: &mut SegsState,
+        plane: &mut PlaneState,
+        colormaps: &[u8],
     ) {
         // 1. Sort vissprites
         self.sort_vissprites();
@@ -1329,19 +1341,28 @@ impl ThingsState {
             );
         }
 
-        // 3. Render any remaining masked mid textures on drawsegs.
-        // R_RenderMaskedSegRange is in segs.rs — when fully implemented, this
-        // loop will call it for each drawseg with a maskedtexturecol.
-        let end = if ds_p > drawsegs.len() {
-            drawsegs.len()
-        } else {
-            ds_p
-        };
+        // 3. Render masked mid-textures on drawsegs (back to front).
+        // Original C (r_things.c ~851-858): iterates drawsegs in reverse,
+        // calling R_RenderMaskedSegRange for each drawseg that has a
+        // maskedtexturecol array.
+        let end = ds_p.min(drawsegs.len());
         for ds_idx in (0..end).rev() {
             if drawsegs[ds_idx].maskedtexturecol.is_some() {
-                // When segs::render_masked_seg_range is available:
-                // render_masked_seg_range(&drawsegs[ds_idx], drawsegs[ds_idx].x1, drawsegs[ds_idx].x2, ...);
-                let _ = ds_idx;
+                let x1 = drawsegs[ds_idx].x1;
+                let x2 = drawsegs[ds_idx].x2;
+                segs.render_masked_seg_range(
+                    &drawsegs[ds_idx],
+                    x1,
+                    x2,
+                    render_state,
+                    render_main,
+                    draw,
+                    plane,
+                    data,
+                    self,
+                    screens,
+                    colormaps,
+                );
             }
         }
 
