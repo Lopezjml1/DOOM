@@ -674,106 +674,100 @@ mod tests {
     /// horizontal traces (this would cause vertex_x == strace.y = 0 to
     /// trigger when objects are at y=0).
     fn make_open_level() -> LevelData {
-        let mut level = LevelData::default();
-
-        // Two vertices forming a vertical partition line at x=0.
-        level.vertexes = vec![
-            Vertex {
-                x: Fixed(0),
-                y: Fixed(-100 * 65536),
-            },
-            Vertex {
-                x: Fixed(0),
-                y: Fixed(100 * 65536),
-            },
-        ];
-
-        // Two sectors at equal heights.
-        level.sectors = vec![
-            Sector {
-                floorheight: Fixed(0),
-                ceilingheight: Fixed(128 * 65536),
-                ..Sector::default()
-            },
-            Sector {
-                floorheight: Fixed(0),
-                ceilingheight: Fixed(128 * 65536),
-                ..Sector::default()
-            },
-        ];
-
-        // One two-sided linedef between the sectors.
-        level.lines = vec![LineDef {
-            v1: 0,
-            v2: 1,
-            flags: 4, // ML_TWOSIDED
-            frontsector: Some(0),
-            backsector: Some(1),
-            validcount: 0,
-            ..LineDef::default()
-        }];
-
-        // Two segs (one for each side of the linedef).
-        level.segs = vec![
-            Seg {
+        LevelData {
+            // Two vertices forming a vertical partition line at x=0.
+            vertexes: vec![
+                Vertex {
+                    x: Fixed(0),
+                    y: Fixed(-100 * 65536),
+                },
+                Vertex {
+                    x: Fixed(0),
+                    y: Fixed(100 * 65536),
+                },
+            ],
+            // Two sectors at equal heights.
+            sectors: vec![
+                Sector {
+                    floorheight: Fixed(0),
+                    ceilingheight: Fixed(128 * 65536),
+                    ..Sector::default()
+                },
+                Sector {
+                    floorheight: Fixed(0),
+                    ceilingheight: Fixed(128 * 65536),
+                    ..Sector::default()
+                },
+            ],
+            // One two-sided linedef between the sectors.
+            lines: vec![LineDef {
                 v1: 0,
                 v2: 1,
-                linedef: 0,
-                frontsector: 0,
+                flags: 4, // ML_TWOSIDED
+                frontsector: Some(0),
                 backsector: Some(1),
-                ..Seg::default()
-            },
-            Seg {
-                v1: 1,
-                v2: 0,
-                linedef: 0,
-                frontsector: 1,
-                backsector: Some(0),
-                ..Seg::default()
-            },
-        ];
-
-        // Two subsectors, one seg each.
-        level.subsectors = vec![
-            Subsector {
-                sector: 0,
-                numlines: 1,
-                firstline: 0,
-            },
-            Subsector {
-                sector: 1,
-                numlines: 1,
-                firstline: 1,
-            },
-        ];
-
-        // One BSP node partitioning along x=0, children are subsectors.
-        level.nodes = vec![Node {
-            x: Fixed(0),
-            y: Fixed(0),
-            dx: Fixed(0),
-            dy: Fixed(65536),
-            children: [0x8000, 0x8001],
-            ..Node::default()
-        }];
-
-        // Reject matrix: all zeros (no pairs rejected).
-        // 2 sectors → 4 bits → 1 byte.
-        level.reject_matrix = vec![0u8];
-
-        level
+                validcount: 0,
+                ..LineDef::default()
+            }],
+            // Two segs (one for each side of the linedef).
+            segs: vec![
+                Seg {
+                    v1: 0,
+                    v2: 1,
+                    linedef: 0,
+                    frontsector: 0,
+                    backsector: Some(1),
+                    ..Seg::default()
+                },
+                Seg {
+                    v1: 1,
+                    v2: 0,
+                    linedef: 0,
+                    frontsector: 1,
+                    backsector: Some(0),
+                    ..Seg::default()
+                },
+            ],
+            // Two subsectors, one seg each.
+            subsectors: vec![
+                Subsector {
+                    sector: 0,
+                    numlines: 1,
+                    firstline: 0,
+                },
+                Subsector {
+                    sector: 1,
+                    numlines: 1,
+                    firstline: 1,
+                },
+            ],
+            // One BSP node partitioning along x=0, children are subsectors.
+            nodes: vec![Node {
+                x: Fixed(0),
+                y: Fixed(0),
+                dx: Fixed(0),
+                dy: Fixed(65536),
+                children: [0x8000, 0x8001],
+                ..Node::default()
+            }],
+            // Reject matrix: all zeros (no pairs rejected).
+            // 2 sectors → 4 bits → 1 byte.
+            reject_matrix: vec![0u8],
+            ..Default::default()
+        }
     }
 
     /// Create a MapObject at the given world position (in map units).
     /// Uses y=10 by default to avoid the p_divline_side line-78 bug.
     fn make_mobj(x: i32, y: i32, z: i32, h: i32, sub: usize) -> MapObject {
-        let mut mobj = MapObject::default();
-        mobj.x = Fixed(x * 65536);
-        mobj.y = Fixed(y * 65536);
-        mobj.z = Fixed(z * 65536);
-        mobj.height = Fixed(h * 65536);
-        mobj.subsector = Some(sub);
-        mobj
+        MapObject {
+            x: Fixed(x * 65536),
+            y: Fixed(y * 65536),
+            z: Fixed(z * 65536),
+            height: Fixed(h * 65536),
+            subsector: Some(sub),
+            ..Default::default()
+        }
     }
 
     #[test]
