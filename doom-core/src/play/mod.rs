@@ -5,3 +5,4 @@
 pub mod maputl;
 pub mod pspr;
 pub mod setup;
+pub mod sight;
