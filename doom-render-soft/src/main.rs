@@ -1339,8 +1339,7 @@ mod tests {
         let mut rs = RenderState::new();
         let mut player = Player::default();
 
-        // Test with fixedcolormap = 0 (no override)
-        player.fixedcolormap = 0;
+        // Test with fixedcolormap = 0 (no override) — already default
         rm.viewangle = Angle::new(0);
         r_setup_frame(&mut rm, &mut rs, &player, 0);
         assert!(rm.fixedcolormap.is_none());
