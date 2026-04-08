@@ -1,203 +1,356 @@
-// SPDX-License-Identifier: GPL-2.0-only
-// Copyright (C) 1993-1996 Id Software, Inc.
-// Copyright (C) 2024 DOOM Rust Port Contributors
+//! Shooting and aiming. Use lines. Radius attacks. Sector height changes.
+//! Translated from linuxdoom-1.10/p_map.c (collision/trace portion, lines 791-1339)
+//!
+//! This module contains:
+//! - **P_AimLineAttack** — auto-aim hitscan that narrows a vertical slope window
+//! - **P_LineAttack** — fire a hitscan ray at a given slope, spawning puffs/blood
+//! - **P_UseLines** — activate special lines in front of the player
+//! - **P_RadiusAttack** — apply splash damage from an explosion
+//! - **P_ChangeSector** — process height changes (crushing) in a sector
+//!
+//! All callbacks that feed into `p_path_traverse` are bare `fn(&Intercept) -> bool`
+//! function pointers (`traverser_t`).  Because they cannot capture context, they
+//! read/write module-level `static mut` state and record **deferred effects**
+//! (puff/blood spawning, damage application, special-line activation) that the
+//! calling public function processes after traversal completes.
 
-//! Map combat operations — aiming, shooting, use scanning, radius attacks, and
-//! sector height changes.
-//!
-//! Translated from linuxdoom-1.10/p_map.c (collision/trace portion).
-//!
-//! This module implements the combat and interaction geometry functions from
-//! `p_map.c` that were NOT placed in `movement.rs` (which handles P_TryMove,
-//! P_CheckPosition, P_SlideMove, P_XYMovement, P_ZMovement) or `maputl.rs`
-//! (which handles P_PathTraverse, P_LineOpening, P_BlockLinesIterator,
-//! P_BlockThingsIterator, and intercept utilities).
-//!
-//! # Original C functions translated
-//!
-//! | Rust function | C function | Description |
-//! |---------------|------------|-------------|
-//! | `p_aim_line_attack` | `P_AimLineAttack` | Auto-aim vertical angle toward target |
-//! | `p_line_attack` | `P_LineAttack` | Fire hitscan weapon along a line |
-//! | `p_use_lines` | `P_UseLines` | Player "use" — scan for usable lines |
-//! | `p_radius_attack` | `P_RadiusAttack` | Splash/radius damage (rockets, barrels) |
-//! | `p_change_sector` | `P_ChangeSector` | Notify things in sector of height change |
-//!
-//! Supporting traverse callbacks:
-//!
-//! | Rust function | C function | Description |
-//! |---------------|------------|-------------|
-//! | `ptr_aim_traverse` | `PTR_AimTraverse` | Auto-aim line-of-sight traversal |
-//! | `ptr_shoot_traverse` | `PTR_ShootTraverse` | Hitscan projectile traversal |
-//! | `ptr_use_traverse` | `PTR_UseTraverse` | Use-line scanning traversal |
-//! | `pit_radius_attack` | `PIT_RadiusAttack` | Radius damage per-thing check |
-//! | `pit_change_sector` | `PIT_ChangeSector` | Crush check per-thing in sector |
+// The `static mut` pattern mirrors the original C global variables and is
+// required for compatibility with the bare-function-pointer callback ABI.
+#![allow(static_mut_refs)]
 
+use crate::info::mobjinfo::MobjType;
+use crate::info::sounds::SfxEnum;
+use crate::info::states::StateNum;
+use crate::play::maputl::{
+    p_line_opening, p_point_on_line_side, traverser_t, Intercept, InterceptData, MapUtilState,
+    PT_ADDLINES, PT_ADDTHINGS,
+};
+use crate::play::sight;
 use crate::types::angle::Angle;
 use crate::types::fixed::{Fixed, FRACBITS, FRACUNIT};
-use crate::types::tables::{finecosine, FINEMASK, FINESINE};
+use crate::types::map_data::{LineDef, LineFlags, Sector, Vertex};
+use crate::types::mobj::{MapObject, MobjFlags};
+use crate::types::tables::{finecosine, FINESINE};
+use crate::util::random::DoomRandom;
 
-// =============================================================================
+// Re-export bbox constants used in P_ChangeSector
+use crate::util::bbox::{BOXBOTTOM, BOXLEFT, BOXRIGHT, BOXTOP};
+
+// =========================================================================
 // Constants
-// =============================================================================
+// =========================================================================
 
-/// Auto-aim vertical scan range (approximately ±16 degrees in fixed-point slope).
-/// Original C: `AIMRANGE` — used in P_AimLineAttack slope clamping.
+/// Player use-line range (64 map units in fixed-point).
+/// Original C: `#define USERANGE (64*FRACUNIT)` in p_local.h.
+const USERANGE: i32 = 64 * FRACUNIT;
+
+/// Maximum thing radius for blockmap search padding.
+/// Original C: `#define MAXRADIUS (32*FRACUNIT)` in p_local.h.
+const MAXRADIUS: i32 = 32 * FRACUNIT;
+
+/// Melee attack range — for puff state selection.
+/// Original C: `#define MELEERANGE (64*FRACUNIT)` in p_local.h.
+const MELEERANGE: i32 = 64 * FRACUNIT;
+
+/// Blockmap cell shift: FRACBITS + 7 = 23.
+/// Original C: `#define MAPBLOCKSHIFT (FRACBITS+7)` in p_local.h.
+const MAPBLOCKSHIFT: i32 = FRACBITS + 7;
+
+/// Maximum number of special lines recorded during a single shoot-traverse.
+const MAX_SHOOT_SPECIALS: usize = 64;
+
+/// ML_TWOSIDED flag value for raw i16 flag checks on LineDef.flags.
+const ML_TWOSIDED: i16 = LineFlags::ML_TWOSIDED.bits();
+
+// =========================================================================
+// Deferred effect types
+// =========================================================================
+
+/// Result of PTR_ShootTraverse — what did the hitscan ray hit?
+#[derive(Debug, Clone, Copy)]
+enum ShootHit {
+    /// The ray did not hit anything within attack range.
+    Nothing,
+    /// The ray hit a wall.  Spawn a bullet puff here.
+    Wall { x: Fixed, y: Fixed, z: Fixed },
+    /// The ray hit sky — no visible effect.
+    Sky,
+    /// The ray hit a map object.
+    Thing {
+        target_idx: usize,
+        x: Fixed,
+        y: Fixed,
+        z: Fixed,
+        no_blood: bool,
+    },
+}
+
+/// Result of PTR_UseTraverse — what happened on the use-line trace?
+#[derive(Debug, Clone, Copy)]
+enum UseResult {
+    /// No result yet (traversal still in progress or completed without hitting).
+    Nothing,
+    /// Hit a wall with no special — play the "oof" sound.
+    NoWay { mobj_idx: usize },
+    /// Found a special line — activate it.
+    UseSpecial { line_idx: usize, side: i32 },
+}
+
+// =========================================================================
+// Module-level mutable state (mirrors original C globals)
+// =========================================================================
+
+/// Consolidated state for the map attack/use/sector-change subsystem.
 ///
-/// Value: `100 * FRACUNIT / 160` in 16.16 fixed-point.
-pub const AIM_RANGE: Fixed = Fixed::new(100 * FRACUNIT / 160);
+/// Stored as `static mut` because the bare `fn(&Intercept) -> bool` callbacks
+/// (`ptr_aim_traverse`, `ptr_shoot_traverse`, `ptr_use_traverse`) cannot
+/// capture closures — they must access shared state through module-level statics.
+struct MapState {
+    // --- Attack state ---
+    /// Index of the mobj that is shooting.
+    shootthing: Option<usize>,
+    /// Height of the shot origin: `z + height/2 + 8*FRACUNIT`.
+    shootz: Fixed,
+    /// Damage value for the current line attack.
+    la_damage: i32,
+    /// Maximum range of the current attack.
+    attackrange: Fixed,
 
-/// Maximum hitscan weapon range.
-/// Original C: `MISSILERANGE` = 32 * 64 * FRACUNIT.
-pub const MISSILE_RANGE: Fixed = Fixed::new(32 * 64 * FRACUNIT);
+    // --- Use state ---
+    /// Index of the mobj that is using a line.
+    usething: Option<usize>,
 
-/// Melee attack range — 64 units plus one fracunit.
-/// Original C: `MELEERANGE` = 64 * FRACUNIT + FRACUNIT.
-pub const MELEE_RANGE: Fixed = Fixed::new(64 * FRACUNIT + FRACUNIT);
+    // --- Trace coordinates (pre-computed for callback access) ---
+    /// Trace origin X.
+    trace_x: Fixed,
+    /// Trace origin Y.
+    trace_y: Fixed,
+    /// Trace delta X (x2 - x1).
+    trace_dx: Fixed,
+    /// Trace delta Y (y2 - y1).
+    trace_dy: Fixed,
 
-/// Maximum range for "use" interaction with switches/doors.
-/// Original C: `USERANGE` = 64 * FRACUNIT.
-pub const USE_RANGE: Fixed = Fixed::new(64 * FRACUNIT);
+    // --- Line opening results (set by do_line_opening helper) ---
+    opentop: Fixed,
+    openbottom: Fixed,
+    openrange: Fixed,
+    #[allow(dead_code)]
+    lowfloor: Fixed,
 
-/// Height offset in FRACUNIT units for bullet puff spawning above shoot_z.
-pub const PUFF_Z_OFFSET: i32 = 4;
+    // --- Sky flat number cache ---
+    skyflatnum: i16,
 
-// =============================================================================
-// MobjFlag constants (duplicated locally to avoid circular dependencies)
-// =============================================================================
+    // --- Deferred shoot results ---
+    /// Special lines hit during shoot traverse (recorded for post-traverse dispatch).
+    shoot_specials: [usize; MAX_SHOOT_SPECIALS],
+    shoot_special_count: usize,
+    /// Final hit result of the shoot traverse.
+    shoot_hit: ShootHit,
 
-/// Flag: thing is shootable.
-pub const MF_SHOOTABLE: u32 = 0x0000_0004;
-/// Flag: thing blocks movement.
-pub const MF_SOLID: u32 = 0x0000_0002;
-/// Flag: thing is a dead corpse.
-pub const MF_CORPSE: u32 = 0x0080_0000;
-/// Flag: thing is a missile/projectile.
-pub const MF_MISSILE: u32 = 0x0010_0000;
-/// Flag: thing counts toward kill percentage.
-pub const MF_COUNTKILL: u32 = 0x0040_0000;
-/// Flag: thing is not in blockmap.
-pub const MF_NOBLOCKMAP: u32 = 0x0000_0001;
-/// Flag: thing allows falling off ledges.
-pub const MF_DROPOFF: u32 = 0x0000_0010;
+    // --- Deferred use result ---
+    use_result: UseResult,
 
-// =============================================================================
-// Attack state — accumulated data during hitscan traversals
-// =============================================================================
+    // --- Raw data pointers (valid only during traversal) ---
+    lines_ptr: *const LineDef,
+    lines_len: usize,
+    sectors_ptr: *const Sector,
+    sectors_len: usize,
+    mobjs_ptr: *const MapObject,
+    mobjs_len: usize,
+    vertexes_ptr: *const Vertex,
+    vertexes_len: usize,
+}
 
-/// Mutable state accumulated during aim and attack traversals.
+// SAFETY: All access to MAP is single-threaded, matching the original C engine.
+unsafe impl Send for MapState {}
+unsafe impl Sync for MapState {}
+
+static mut MAP: MapState = MapState {
+    shootthing: None,
+    shootz: Fixed(0),
+    la_damage: 0,
+    attackrange: Fixed(0),
+    usething: None,
+    trace_x: Fixed(0),
+    trace_y: Fixed(0),
+    trace_dx: Fixed(0),
+    trace_dy: Fixed(0),
+    opentop: Fixed(0),
+    openbottom: Fixed(0),
+    openrange: Fixed(0),
+    lowfloor: Fixed(0),
+    skyflatnum: 0,
+    shoot_specials: [0; MAX_SHOOT_SPECIALS],
+    shoot_special_count: 0,
+    shoot_hit: ShootHit::Nothing,
+    use_result: UseResult::Nothing,
+    lines_ptr: std::ptr::null(),
+    lines_len: 0,
+    sectors_ptr: std::ptr::null(),
+    sectors_len: 0,
+    mobjs_ptr: std::ptr::null(),
+    mobjs_len: 0,
+    vertexes_ptr: std::ptr::null(),
+    vertexes_len: 0,
+};
+
+// =========================================================================
+// Exported module-level globals
+// =========================================================================
+
+/// The mobj that was targeted by the last `p_aim_line_attack` or hit by
+/// `p_line_attack`.  `None` if nothing was hit.
+/// Original C: `mobj_t* linetarget;` (p_map.c line 66).
+#[allow(non_upper_case_globals)]
+pub static mut linetarget: Option<usize> = None;
+
+/// The vertical slope determined by `p_aim_line_attack` (auto-aim result).
+/// Original C: `fixed_t aimslope;` (p_map.c line 800).
+#[allow(non_upper_case_globals)]
+pub static mut aimslope: Fixed = Fixed(0);
+
+// =========================================================================
+// Raw-pointer accessor helpers (valid only within a traversal scope)
+// =========================================================================
+
+/// Access the line array via raw pointer stored in MAP.
 ///
-/// Mirrors the C globals: `la_damage`, `attackrange`, `aimslope`, `shootz`,
-/// `attackrange`, `attack_x/y/angle`, `topslope`, `bottomslope`, etc.
-#[derive(Debug, Clone)]
-pub struct AttackState {
-    /// Damage to inflict on hit.
-    pub la_damage: i32,
-    /// Total attack range (e.g. MISSILERANGE, MELEERANGE).
-    pub attack_range: Fixed,
-    /// Computed aim slope from auto-aim or manual input.
-    pub aim_slope: Fixed,
-    /// Z origin of the shot (source mobj z + half height + 8).
-    pub shoot_z: Fixed,
-    /// Source mobj's X position at time of attack.
-    pub attack_x: Fixed,
-    /// Source mobj's Y position at time of attack.
-    pub attack_y: Fixed,
-    /// Attack horizontal angle.
-    pub attack_angle: Angle,
-    /// Top slope limit for auto-aim scan.
-    pub top_slope: Fixed,
-    /// Bottom slope limit for auto-aim scan.
-    pub bottom_slope: Fixed,
-    /// Index of the thing that was hit (if any).
-    pub line_target: Option<usize>,
-    /// Shoot-traverse: whether we already spawned a puff / blood.
-    pub shoot_finished: bool,
+/// # Safety
+/// Must only be called while MAP.lines_ptr/lines_len are valid.
+#[inline]
+unsafe fn map_lines() -> &'static [LineDef] {
+    std::slice::from_raw_parts(MAP.lines_ptr, MAP.lines_len)
 }
 
-impl AttackState {
-    /// Create a new default attack state with all fields zeroed.
-    pub fn new() -> Self {
-        Self {
-            la_damage: 0,
-            attack_range: Fixed::ZERO,
-            aim_slope: Fixed::ZERO,
-            shoot_z: Fixed::ZERO,
-            attack_x: Fixed::ZERO,
-            attack_y: Fixed::ZERO,
-            attack_angle: Angle::new(0),
-            top_slope: Fixed::ZERO,
-            bottom_slope: Fixed::ZERO,
-            line_target: None,
-            shoot_finished: false,
-        }
-    }
+/// Access the sector array via raw pointer stored in MAP.
+#[inline]
+unsafe fn map_sectors() -> &'static [Sector] {
+    std::slice::from_raw_parts(MAP.sectors_ptr, MAP.sectors_len)
 }
 
-impl Default for AttackState {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Access the mobj array via raw pointer stored in MAP.
+#[inline]
+unsafe fn map_mobjs() -> &'static [MapObject] {
+    std::slice::from_raw_parts(MAP.mobjs_ptr, MAP.mobjs_len)
 }
 
-// =============================================================================
-// MapCombatContext — trait for map combat operations
-// =============================================================================
+/// Access the vertex array via raw pointer stored in MAP.
+#[inline]
+unsafe fn map_vertexes() -> &'static [Vertex] {
+    std::slice::from_raw_parts(MAP.vertexes_ptr, MAP.vertexes_len)
+}
 
-/// Trait providing access to map geometry and entity data needed by combat
-/// functions. This avoids circular module dependencies by abstracting over
-/// the game state.
-pub trait MapCombatContext {
-    /// Number of things (mobjs) in the current level.
-    fn num_things(&self) -> usize;
+/// Compute line opening using a temporary `MapUtilState` and store results
+/// in `MAP.opentop`, `MAP.openbottom`, `MAP.openrange`, `MAP.lowfloor`.
+///
+/// # Safety
+/// MAP.lines_ptr, MAP.sectors_ptr must be valid.
+unsafe fn do_line_opening(line_idx: usize) {
+    let li = &map_lines()[line_idx];
+    let secs = map_sectors();
+    let mut temp = MapUtilState::new();
+    p_line_opening(&mut temp, li, secs);
+    MAP.opentop = temp.opentop;
+    MAP.openbottom = temp.openbottom;
+    MAP.openrange = temp.openrange;
+    MAP.lowfloor = temp.lowfloor;
+}
 
-    /// Get a thing's position as (x, y, z) in Fixed.
-    fn thing_pos(&self, idx: usize) -> (Fixed, Fixed, Fixed);
+/// Store raw pointers to level data in MAP for callback access.
+///
+/// # Safety
+/// The caller must ensure the slices outlive the traversal.
+unsafe fn stash_level_data(ctx: &dyn MapContext) {
+    let lines = ctx.lines();
+    MAP.lines_ptr = lines.as_ptr();
+    MAP.lines_len = lines.len();
+    let sectors = ctx.sectors();
+    MAP.sectors_ptr = sectors.as_ptr();
+    MAP.sectors_len = sectors.len();
+    let mobjs = ctx.mobjs();
+    MAP.mobjs_ptr = mobjs.as_ptr();
+    MAP.mobjs_len = mobjs.len();
+    let verts = ctx.vertexes();
+    MAP.vertexes_ptr = verts.as_ptr();
+    MAP.vertexes_len = verts.len();
+    MAP.skyflatnum = ctx.sky_flatnum();
+}
 
-    /// Get a thing's height (for shooting through).
-    fn thing_height(&self, idx: usize) -> Fixed;
+// =========================================================================
+// MapContext — context trait for map attack / use / sector-change functions
+// =========================================================================
 
-    /// Get a thing's radius.
-    fn thing_radius(&self, idx: usize) -> Fixed;
+/// Trait providing all level data and cross-module dispatch needed by the
+/// public functions in this module.
+///
+/// Modeled after `MovementContext`, `MobjContext`, etc. — each public
+/// function borrows `&mut dyn MapContext` for the duration of its call.
+/// Bare `fn(&Intercept) -> bool` callbacks (used by `p_path_traverse`)
+/// cannot access the context directly — they read/write the module-level
+/// `static mut MAP` instead and record deferred effects that the calling
+/// function processes after traversal completes.
+pub trait MapContext {
+    // --- Level geometry ---
+    fn lines(&self) -> &[LineDef];
+    fn lines_mut(&mut self) -> &mut [LineDef];
+    fn vertexes(&self) -> &[Vertex];
+    fn sectors(&self) -> &[Sector];
+    fn sectors_mut(&mut self) -> &mut [Sector];
 
-    /// Get a thing's flags as a raw u32 bitfield.
-    fn thing_flags(&self, idx: usize) -> u32;
+    // --- Mobj arena ---
+    fn mobjs(&self) -> &[MapObject];
+    fn mobjs_mut(&mut self) -> &mut Vec<MapObject>;
 
-    /// Get a thing's health.
-    fn thing_health(&self, idx: usize) -> i32;
+    // --- Blockmap ---
+    fn blocklinks(&self) -> &[Option<usize>];
+    fn bmap_orgx(&self) -> Fixed;
+    fn bmap_orgy(&self) -> Fixed;
+    fn bmap_width(&self) -> i32;
+    fn bmap_height(&self) -> i32;
 
-    /// Number of lines in the level.
-    fn num_lines(&self) -> usize;
+    // --- Sky ---
+    fn sky_flatnum(&self) -> i16;
 
-    /// Get line flags.
-    fn line_flags(&self, line_idx: usize) -> i16;
+    // --- Players ---
+    fn players(&self) -> &[crate::types::player::Player];
 
-    /// Get line special type.
-    fn line_special(&self, line_idx: usize) -> i16;
+    // --- Game state ---
+    fn leveltime(&self) -> i32;
 
-    /// Get line front sector index (if any).
-    fn line_frontsector(&self, line_idx: usize) -> Option<usize>;
+    // --- RNG ---
+    fn rng_mut(&mut self) -> &mut DoomRandom;
 
-    /// Get line back sector index (if any).
-    fn line_backsector(&self, line_idx: usize) -> Option<usize>;
+    // --- Path traverse dispatch ---
+    /// Execute `p_path_traverse` with the context's own level data.
+    ///
+    /// The implementor calls `maputl::p_path_traverse(...)` internally,
+    /// splitting borrows on its own struct fields.  This avoids the
+    /// borrow-conflict that would occur if we tried to pass both
+    /// `ctx.lines_mut()` and `ctx.blockmap()` to `p_path_traverse` from
+    /// outside the trait.
+    fn do_path_traverse(
+        &mut self,
+        x1: Fixed,
+        y1: Fixed,
+        x2: Fixed,
+        y2: Fixed,
+        flags: i32,
+        trav: traverser_t,
+    ) -> bool;
 
-    /// Number of sectors in the level.
-    fn num_sectors(&self) -> usize;
+    // --- Cross-module dispatch ---
 
-    /// Get sector floor height.
-    fn sector_floorheight(&self, idx: usize) -> Fixed;
+    /// Spawn a bullet-impact puff.  Delegates to `play::mobj::p_spawn_puff`.
+    fn p_spawn_puff(&mut self, x: Fixed, y: Fixed, z: Fixed, at_melee: bool) -> usize;
 
-    /// Get sector ceiling height.
-    fn sector_ceilingheight(&self, idx: usize) -> Fixed;
+    /// Spawn blood spray.  Delegates to `play::mobj::p_spawn_blood`.
+    fn p_spawn_blood(&mut self, x: Fixed, y: Fixed, z: Fixed, damage: i32) -> usize;
 
-    /// Spawn a bullet puff at position (x, y, z).
-    fn spawn_puff(&mut self, x: Fixed, y: Fixed, z: Fixed);
+    /// Spawn a generic map object.  Delegates to `play::mobj::p_spawn_mobj`.
+    fn p_spawn_mobj(&mut self, x: Fixed, y: Fixed, z: Fixed, mtype: MobjType) -> usize;
 
-    /// Spawn blood splatter at position (x, y, z) with the given damage amount.
-    fn spawn_blood(&mut self, x: Fixed, y: Fixed, z: Fixed, damage: i32);
-
-    /// Deal damage to a thing.
-    fn damage_mobj(
+    /// Apply damage to a thing.  Delegates to `play::inter::p_damage_mobj`.
+    fn p_damage_mobj(
         &mut self,
         target: usize,
         inflictor: Option<usize>,
@@ -205,663 +358,879 @@ pub trait MapCombatContext {
         damage: i32,
     );
 
-    /// Get list of thing indices in a given sector.
-    fn sector_things(&self, sec_idx: usize) -> Vec<usize>;
+    /// Set a mobj's state.  Delegates to `play::mobj::p_set_mobj_state`.
+    fn p_set_mobj_state(&mut self, mobj: usize, state: StateNum) -> bool;
 
-    /// Use a special line (P_UseSpecialLine equivalent).
-    fn use_special_line(&mut self, player_idx: usize, line_idx: usize, side: i32);
+    /// Remove a mobj from the world.  Delegates to `play::mobj::p_remove_mobj`.
+    fn p_remove_mobj(&mut self, mobj: usize);
 
-    /// Compute the line opening (floor, ceiling, lowfloor) between front and
-    /// back sectors of a two-sided line.
-    fn line_opening(&self, line_idx: usize) -> ShotOpening;
+    /// Recalculate z-clipping after a sector height change.
+    /// Returns `true` if the thing fits, `false` if it doesn't.
+    /// Delegates to `play::movement::p_thing_height_clip`.
+    fn p_thing_height_clip(&mut self, thing: usize) -> bool;
 
-    /// Get a thing's subsector index.
-    fn thing_subsector(&self, idx: usize) -> Option<usize>;
+    /// Line-of-sight check between two mobjs.
+    /// Delegates to `play::sight::p_check_sight`.
+    fn p_check_sight(&mut self, t1: usize, t2: usize) -> bool;
 
-    /// Get a subsector's sector index.
-    fn subsector_sector(&self, subsector_idx: usize) -> usize;
+    /// Activate a shoot-triggered line special.
+    /// Delegates to `play::spec::p_shoot_special_line`.
+    fn p_shoot_special_line(&mut self, thing: usize, line: usize);
+
+    /// Activate a use-triggered line special (full dispatch).
+    fn p_use_special_line(&mut self, thing: usize, line: usize, side: i32);
+
+    /// Play a sound effect at a mobj origin (or globally if `None`).
+    fn s_start_sound(&mut self, origin: Option<usize>, sfx: SfxEnum);
 }
 
-/// Describes the gap through a two-sided line for shooting traversal.
-#[derive(Debug, Clone, Copy)]
-pub struct ShotOpening {
-    /// Highest point the shot can pass through.
-    pub ceiling: Fixed,
-    /// Lowest point the shot can pass through.
-    pub floor: Fixed,
-    /// Lowest floor on either side (for step detection).
-    pub lowfloor: Fixed,
-}
+// =========================================================================
+// PTR_AimTraverse — auto-aim intercept callback (p_map.c 816-893)
+// =========================================================================
+//
+// Narrows the vertical slope window [bottomslope..topslope] as the trace
+// crosses two-sided lines, and sets `aimslope` + `linetarget` when a
+// SHOOTABLE thing is found within the window.
 
-// =============================================================================
-// PTR_AimTraverse — Auto-aim line-of-sight traversal callback
-// Translated from p_map.c lines 1096-1165
-// =============================================================================
-
-/// Process one intercept during auto-aim traversal.
+/// Auto-aim intercept callback.
 ///
-/// Returns `true` to stop traversal (target found or blocked), `false` to
-/// continue scanning.
-///
-/// If an aimable target is found, `state.aim_slope` and `state.line_target`
-/// are set.
-pub fn ptr_aim_traverse(
-    state: &mut AttackState,
-    intercept_frac: Fixed,
-    is_line: bool,
-    line_idx: Option<usize>,
-    thing_idx: Option<usize>,
-    ctx: &dyn MapCombatContext,
-) -> bool {
-    if is_line {
-        let li = line_idx.unwrap();
-        let _flags = ctx.line_flags(li);
-        let back = ctx.line_backsector(li);
+/// Returns `true` to continue traversal, `false` to stop.
+fn ptr_aim_traverse(intercept: &Intercept) -> bool {
+    // SAFETY: Called only during P_AimLineAttack while MAP state is valid.
+    unsafe {
+        match intercept.d {
+            InterceptData::Line(line_idx) => {
+                let lines = map_lines();
+                let li = &lines[line_idx];
 
-        // One-sided line: stops aim scan.
-        if back.is_none() {
-            return true;
-        }
+                // Not two-sided → blocks aim
+                if (li.flags & ML_TWOSIDED) == 0 {
+                    return false;
+                }
 
-        let opening = ctx.line_opening(li);
+                // Compute opening through the line
+                do_line_opening(line_idx);
 
-        if opening.ceiling == opening.floor {
-            return true; // Line is closed.
-        }
+                // Closed opening → blocks aim
+                if MAP.openrange.0 <= 0 {
+                    return false;
+                }
 
-        // Calculate distance to intercept
-        let dist = state.attack_range.fixed_mul(intercept_frac);
-        if dist.0 <= 0 {
-            return true;
-        }
+                // Compute distance along the trace
+                let dist = MAP.attackrange.fixed_mul(intercept.frac);
+                if dist.0 == 0 {
+                    return true; // degenerate — skip
+                }
 
-        // Adjust top/bottom slope limits based on the opening
-        // floor_slope = (opening.floor - shoot_z) / dist
-        let floor_slope = Fixed::new(
-            ((opening.floor.0 as i64 - state.shoot_z.0 as i64) * FRACUNIT as i64 / dist.0 as i64)
-                as i32,
-        );
-        if floor_slope > state.bottom_slope {
-            state.bottom_slope = floor_slope;
-        }
+                let sectors = map_sectors();
 
-        let ceil_slope = Fixed::new(
-            ((opening.ceiling.0 as i64 - state.shoot_z.0 as i64) * FRACUNIT as i64 / dist.0 as i64)
-                as i32,
-        );
-        if ceil_slope < state.top_slope {
-            state.top_slope = ceil_slope;
-        }
+                // Narrow the slope window based on floor/ceiling differences
+                if let (Some(front_idx), Some(back_idx)) = (li.frontsector, li.backsector) {
+                    let front = &sectors[front_idx];
+                    let back = &sectors[back_idx];
 
-        if state.top_slope <= state.bottom_slope {
-            return true; // No gap left to aim through.
-        }
+                    if front.floorheight != back.floorheight {
+                        let slope = (MAP.openbottom - MAP.shootz).fixed_div(dist);
+                        if slope.0 > sight::bottomslope.0 {
+                            sight::bottomslope = slope;
+                        }
+                    }
 
-        return false; // Continue traversal.
-    }
+                    if front.ceilingheight != back.ceilingheight {
+                        let slope = (MAP.opentop - MAP.shootz).fixed_div(dist);
+                        if slope.0 < sight::topslope.0 {
+                            sight::topslope = slope;
+                        }
+                    }
+                }
 
-    // It's a thing intercept
-    let ti = thing_idx.unwrap();
-    let flags = ctx.thing_flags(ti);
+                // If the slope window has closed, nothing more can be aimed at
+                if sight::topslope.0 <= sight::bottomslope.0 {
+                    return false;
+                }
 
-    if flags & MF_SHOOTABLE == 0 {
-        return false; // Can't shoot it.
-    }
-
-    let dist = state.attack_range.fixed_mul(intercept_frac);
-    if dist.0 <= 0 {
-        return false;
-    }
-
-    let (_, _, thing_z) = ctx.thing_pos(ti);
-    let thing_h = ctx.thing_height(ti);
-
-    // Check if the thing is within the aim slopes
-    let thing_top_slope = Fixed::new(
-        (((thing_z.0 + thing_h.0) as i64 - state.shoot_z.0 as i64) * FRACUNIT as i64
-            / dist.0 as i64) as i32,
-    );
-    if thing_top_slope < state.bottom_slope {
-        return false; // Above our aim window.
-    }
-
-    let thing_bottom_slope = Fixed::new(
-        ((thing_z.0 as i64 - state.shoot_z.0 as i64) * FRACUNIT as i64 / dist.0 as i64) as i32,
-    );
-    if thing_bottom_slope > state.top_slope {
-        return false; // Below our aim window.
-    }
-
-    // Clamp slopes to aim range
-    let mut aim = thing_top_slope;
-    if aim > state.top_slope {
-        aim = state.top_slope;
-    }
-    let bottom_check = thing_bottom_slope;
-    if bottom_check > state.bottom_slope {
-        // Aim at the midpoint if both slopes are valid
-        aim = Fixed::new((aim.0 + bottom_check.0) / 2);
-    }
-
-    state.aim_slope = aim;
-    state.line_target = Some(ti);
-    true // Found a target — stop traversal.
-}
-
-// =============================================================================
-// PTR_ShootTraverse — Hitscan projectile traversal callback
-// Translated from p_map.c lines 1170-1305
-// =============================================================================
-
-/// Process one intercept during hitscan weapon traversal.
-///
-/// Returns `true` to stop traversal (hit something or blocked), `false` to
-/// continue.
-pub fn ptr_shoot_traverse(
-    state: &mut AttackState,
-    intercept_frac: Fixed,
-    is_line: bool,
-    line_idx: Option<usize>,
-    thing_idx: Option<usize>,
-    ctx: &mut dyn MapCombatContext,
-) -> bool {
-    if state.shoot_finished {
-        return true;
-    }
-
-    if is_line {
-        let li = line_idx.unwrap();
-        let back = ctx.line_backsector(li);
-
-        if back.is_some() {
-            let opening = ctx.line_opening(li);
-
-            let dist = state.attack_range.fixed_mul(intercept_frac);
-            if dist.0 <= 0 {
-                return true;
+                true // continue traversal
             }
+            InterceptData::Thing(thing_idx) => {
+                let mobjs = map_mobjs();
+                let th = &mobjs[thing_idx];
 
-            // Check if the shot passes through the opening
-            let floor_slope = Fixed::new(
-                ((opening.floor.0 as i64 - state.shoot_z.0 as i64) * FRACUNIT as i64
-                    / dist.0 as i64) as i32,
-            );
-            let ceil_slope = Fixed::new(
-                ((opening.ceiling.0 as i64 - state.shoot_z.0 as i64) * FRACUNIT as i64
-                    / dist.0 as i64) as i32,
-            );
+                // Don't aim at self
+                if MAP.shootthing == Some(thing_idx) {
+                    return true;
+                }
 
-            if opening.ceiling != opening.floor
-                && ceil_slope > state.aim_slope
-                && floor_slope < state.aim_slope
-            {
-                return false; // Shot passes through.
+                // Must be shootable
+                if !th.flags.contains(MobjFlags::MF_SHOOTABLE) {
+                    return true;
+                }
+
+                // Compute distance
+                let dist = MAP.attackrange.fixed_mul(intercept.frac);
+                if dist.0 == 0 {
+                    return true;
+                }
+
+                // Slopes to the top and bottom of the thing
+                let thingtopslope = Fixed(th.z.0 + th.height.0 - MAP.shootz.0).fixed_div(dist);
+                let thingbottomslope = Fixed(th.z.0 - MAP.shootz.0).fixed_div(dist);
+
+                // Check if thing is outside the slope window
+                if thingtopslope.0 < sight::bottomslope.0 {
+                    return true; // shot over the thing
+                }
+                if thingbottomslope.0 > sight::topslope.0 {
+                    return true; // shot under the thing
+                }
+
+                // Clamp to the slope window
+                let top = if thingtopslope.0 > sight::topslope.0 {
+                    sight::topslope
+                } else {
+                    thingtopslope
+                };
+                let bottom = if thingbottomslope.0 < sight::bottomslope.0 {
+                    sight::bottomslope
+                } else {
+                    thingbottomslope
+                };
+
+                // Set aim slope as the midpoint of the clamped range
+                aimslope = Fixed((top.0 + bottom.0) / 2);
+                linetarget = Some(thing_idx);
+
+                false // stop — found a target
             }
         }
+    }
+}
 
-        // Hit a wall — spawn puff
-        let frac = intercept_frac;
-        let frac_adjusted = Fixed::new(frac.0 - Fixed::new(10 * FRACUNIT / 160).0);
+// =========================================================================
+// PTR_ShootTraverse — hitscan shoot intercept callback (p_map.c 899-1016)
+// =========================================================================
 
-        let fine_idx = state.attack_angle.to_fine_angle() & FINEMASK;
-        let cos_val = finecosine(fine_idx);
-        let sin_val = FINESINE[fine_idx];
+/// Hitscan shoot intercept callback.
+///
+/// Returns `true` to continue traversal, `false` to stop.
+fn ptr_shoot_traverse(intercept: &Intercept) -> bool {
+    // SAFETY: Called only during P_LineAttack while MAP state is valid.
+    unsafe {
+        match intercept.d {
+            InterceptData::Line(line_idx) => ptr_shoot_traverse_line(line_idx, intercept.frac),
+            InterceptData::Thing(thing_idx) => ptr_shoot_traverse_thing(thing_idx, intercept.frac),
+        }
+    }
+}
 
-        let _hit_x = state.attack_x
-            + state
-                .attack_range
-                .fixed_mul(frac_adjusted)
-                .fixed_mul(cos_val)
-                .fixed_div(state.attack_range);
-        // Simplified: hit = attack_origin + frac_adjusted * direction
-        // Actually: hit_x = attack_x + frac_adjusted * cos(angle) where direction was already range-scaled
-        // The original C does: x = trace.x + FixedMul(trace.dx, frac)
-        // Let's use the simpler formulation:
-        let hit_x2 = Fixed::new(
-            state.attack_x.0 + ((frac_adjusted.0 as i64 * cos_val.0 as i64) >> FRACBITS) as i32,
-        );
-        let hit_y2 = Fixed::new(
-            state.attack_y.0 + ((frac_adjusted.0 as i64 * sin_val.0 as i64) >> FRACBITS) as i32,
-        );
-        let hit_z = Fixed::new(
-            state.shoot_z.0
-                + ((state.aim_slope.0 as i64 * frac_adjusted.0 as i64) >> FRACBITS) as i32,
-        );
+/// Handle a line intercept during shoot traverse.
+///
+/// # Safety
+/// MAP state and level data pointers must be valid.
+unsafe fn ptr_shoot_traverse_line(line_idx: usize, frac: Fixed) -> bool {
+    let lines = map_lines();
+    let li = &lines[line_idx];
 
-        ctx.spawn_puff(hit_x2, hit_y2, hit_z);
-        state.shoot_finished = true;
-        return true;
+    // Record special lines for post-traverse activation
+    if li.special != 0 && MAP.shoot_special_count < MAX_SHOOT_SPECIALS {
+        MAP.shoot_specials[MAP.shoot_special_count] = line_idx;
+        MAP.shoot_special_count += 1;
     }
 
-    // Thing intercept
-    let ti = thing_idx.unwrap();
-    let flags = ctx.thing_flags(ti);
-
-    if flags & MF_SHOOTABLE == 0 {
-        return false; // Can't shoot this thing.
+    // One-sided line — always blocks
+    if (li.flags & ML_TWOSIDED) == 0 {
+        return shoot_hit_line(line_idx, frac);
     }
 
-    let dist = state.attack_range.fixed_mul(intercept_frac);
-    if dist.0 <= 0 {
-        return false;
+    // Compute opening
+    do_line_opening(line_idx);
+
+    // Compute the distance to the intercept
+    let dist = MAP.attackrange.fixed_mul(frac);
+
+    // Check floor and ceiling slopes
+    if let (Some(front_idx), Some(back_idx)) = (li.frontsector, li.backsector) {
+        let sectors = map_sectors();
+        let front = &sectors[front_idx];
+        let back = &sectors[back_idx];
+
+        // Floor check — if higher floor blocks the shot
+        if front.floorheight != back.floorheight {
+            let slope = (MAP.openbottom - MAP.shootz).fixed_div(dist);
+            if slope.0 > aimslope.0 {
+                return shoot_hit_line(line_idx, frac);
+            }
+        }
+
+        // Ceiling check — if lower ceiling blocks the shot
+        if front.ceilingheight != back.ceilingheight {
+            let slope = (MAP.opentop - MAP.shootz).fixed_div(dist);
+            if slope.0 < aimslope.0 {
+                return shoot_hit_line(line_idx, frac);
+            }
+        }
     }
 
-    let (_, _, thing_z) = ctx.thing_pos(ti);
-    let thing_h = ctx.thing_height(ti);
-
-    // Check if the shot's vertical trajectory passes through the thing
-    let thing_top_slope = Fixed::new(
-        (((thing_z.0 + thing_h.0) as i64 - state.shoot_z.0 as i64) * FRACUNIT as i64
-            / dist.0 as i64) as i32,
-    );
-    if thing_top_slope < state.aim_slope {
-        return false; // Shot passes over the thing.
-    }
-
-    let thing_bottom_slope = Fixed::new(
-        ((thing_z.0 as i64 - state.shoot_z.0 as i64) * FRACUNIT as i64 / dist.0 as i64) as i32,
-    );
-    if thing_bottom_slope > state.aim_slope {
-        return false; // Shot passes under the thing.
-    }
-
-    // Hit the thing
-    let frac = intercept_frac;
-    let frac_adjusted = Fixed::new(frac.0 - Fixed::new(10 * FRACUNIT / 160).0);
-
-    let fine_idx = state.attack_angle.to_fine_angle() & FINEMASK;
-    let cos_val = finecosine(fine_idx);
-    let sin_val = FINESINE[fine_idx];
-
-    let hit_x = Fixed::new(
-        state.attack_x.0 + ((frac_adjusted.0 as i64 * cos_val.0 as i64) >> FRACBITS) as i32,
-    );
-    let hit_y = Fixed::new(
-        state.attack_y.0 + ((frac_adjusted.0 as i64 * sin_val.0 as i64) >> FRACBITS) as i32,
-    );
-    let hit_z = Fixed::new(
-        state.shoot_z.0 + ((state.aim_slope.0 as i64 * frac_adjusted.0 as i64) >> FRACBITS) as i32,
-    );
-
-    // Spawn blood if it's a bleeder, or puff for non-bleeding things
-    if flags & MF_NOBLOCKMAP != 0 {
-        ctx.spawn_puff(hit_x, hit_y, hit_z);
-    } else {
-        ctx.spawn_blood(hit_x, hit_y, hit_z, state.la_damage);
-    }
-
-    if state.la_damage > 0 {
-        ctx.damage_mobj(ti, None, None, state.la_damage);
-    }
-
-    state.line_target = Some(ti);
-    state.shoot_finished = true;
+    // The line doesn't block the shot — continue
     true
 }
 
-// =============================================================================
-// P_AimLineAttack — Auto-aim vertical angle toward a target
-// Translated from p_map.c lines 1310-1365
-// =============================================================================
+/// Compute the wall-hit position and record it in `MAP.shoot_hit`.
+///
+/// Corresponds to the `hitline:` label in the original C code (p_map.c ~978).
+/// Includes sky hack check.
+///
+/// # Safety
+/// MAP state and level data pointers must be valid.
+unsafe fn shoot_hit_line(line_idx: usize, frac: Fixed) -> bool {
+    // Back up slightly to position the puff in front of the wall
+    let frac = Fixed(frac.0 - Fixed(4 * FRACUNIT).fixed_div(MAP.attackrange).0);
 
-/// Perform auto-aim scan from a source mobj along the given angle.
+    // Compute hit position
+    let x = Fixed(MAP.trace_x.0 + MAP.trace_dx.fixed_mul(frac).0);
+    let y = Fixed(MAP.trace_y.0 + MAP.trace_dy.fixed_mul(frac).0);
+    let z = Fixed(MAP.shootz.0 + aimslope.fixed_mul(MAP.attackrange.fixed_mul(frac)).0);
+
+    // --- Sky hack check ---
+    let lines = map_lines();
+    let li = &lines[line_idx];
+
+    if let Some(front_idx) = li.frontsector {
+        let sectors = map_sectors();
+        let front = &sectors[front_idx];
+        if front.ceilingpic == MAP.skyflatnum {
+            // Don't shoot the sky!
+            if z.0 > front.ceilingheight.0 {
+                MAP.shoot_hit = ShootHit::Sky;
+                return false;
+            }
+            // Sky hack wall: back sector also sky ceiling → absorb silently
+            if let Some(back_idx) = li.backsector {
+                if sectors[back_idx].ceilingpic == MAP.skyflatnum {
+                    MAP.shoot_hit = ShootHit::Sky;
+                    return false;
+                }
+            }
+        }
+    }
+
+    // Spawn bullet puff at impact point
+    MAP.shoot_hit = ShootHit::Wall { x, y, z };
+    false
+}
+
+/// Handle a thing intercept during shoot traverse.
 ///
-/// Scans from `source` along `angle` out to `range`, looking for an
-/// aimable target within the vertical slope window `±AIM_RANGE`.
+/// # Safety
+/// MAP state and level data pointers must be valid.
+unsafe fn ptr_shoot_traverse_thing(thing_idx: usize, frac: Fixed) -> bool {
+    let mobjs = map_mobjs();
+    let th = &mobjs[thing_idx];
+
+    // Don't shoot self
+    if MAP.shootthing == Some(thing_idx) {
+        return true;
+    }
+
+    // Must be shootable
+    if !th.flags.contains(MobjFlags::MF_SHOOTABLE) {
+        return true;
+    }
+
+    // Compute distance
+    let dist = MAP.attackrange.fixed_mul(frac);
+    if dist.0 == 0 {
+        return true;
+    }
+
+    // Check if the shot goes over or under the thing
+    let thingtopslope = Fixed(th.z.0 + th.height.0 - MAP.shootz.0).fixed_div(dist);
+    if thingtopslope.0 < aimslope.0 {
+        return true; // shot over
+    }
+
+    let thingbottomslope = Fixed(th.z.0 - MAP.shootz.0).fixed_div(dist);
+    if thingbottomslope.0 > aimslope.0 {
+        return true; // shot under
+    }
+
+    // Hit! Back up the fraction for the impact position
+    let frac = Fixed(frac.0 - Fixed(10 * FRACUNIT).fixed_div(MAP.attackrange).0);
+
+    let x = Fixed(MAP.trace_x.0 + MAP.trace_dx.fixed_mul(frac).0);
+    let y = Fixed(MAP.trace_y.0 + MAP.trace_dy.fixed_mul(frac).0);
+    let z = Fixed(MAP.shootz.0 + aimslope.fixed_mul(MAP.attackrange.fixed_mul(frac)).0);
+
+    let no_blood = th.flags.contains(MobjFlags::MF_NOBLOOD);
+
+    MAP.shoot_hit = ShootHit::Thing {
+        target_idx: thing_idx,
+        x,
+        y,
+        z,
+        no_blood,
+    };
+
+    false // stop traversal
+}
+
+// =========================================================================
+// PTR_UseTraverse — use-line intercept callback (p_map.c 1095-1123)
+// =========================================================================
+
+/// Use-line intercept callback.
 ///
-/// Returns the computed aim slope. If a target was found,
-/// `state.line_target` is set.
+/// Returns `true` to continue traversal, `false` to stop.
+fn ptr_use_traverse(intercept: &Intercept) -> bool {
+    // SAFETY: Called only during P_UseLines while MAP state is valid.
+    unsafe {
+        match intercept.d {
+            InterceptData::Line(line_idx) => {
+                let lines = map_lines();
+                let li = &lines[line_idx];
+
+                if li.special == 0 {
+                    // No special — check if the line blocks
+                    do_line_opening(line_idx);
+                    if MAP.openrange.0 <= 0 {
+                        // Closed opening — play "oof" sound
+                        if let Some(thing_idx) = MAP.usething {
+                            MAP.use_result = UseResult::NoWay {
+                                mobj_idx: thing_idx,
+                            };
+                        }
+                        return false;
+                    }
+                    // Opening exists — continue looking
+                    true
+                } else {
+                    // Has special — determine side and record activation
+                    let verts = map_vertexes();
+                    if let Some(thing_idx) = MAP.usething {
+                        let mobjs = map_mobjs();
+                        let th = &mobjs[thing_idx];
+                        let side = p_point_on_line_side(th.x, th.y, li, verts) as i32;
+                        MAP.use_result = UseResult::UseSpecial { line_idx, side };
+                    }
+                    // Can't use more than one special line in a row
+                    false
+                }
+            }
+            // Things are not checked during use traversal
+            InterceptData::Thing(_) => true,
+        }
+    }
+}
+
+// =========================================================================
+// P_AimLineAttack — auto-aim hitscan (p_map.c 1022-1054)
+// =========================================================================
+
+/// Auto-aim a hitscan ray from `source_idx` along `angle` up to `distance`.
 ///
-/// # Arguments
+/// Sets the module-level `aimslope` and `linetarget` globals.
+/// Returns the determined aim slope (or `Fixed(0)` if nothing was found).
 ///
-/// * `source_idx` — Index of the source mobj in the mobj arena
-/// * `angle` — Horizontal angle of the scan
-/// * `range` — Maximum scan distance
-/// * `state` — Mutable attack state to record results
-/// * `ctx` — Map context for geometry queries
+/// Original C: `fixed_t P_AimLineAttack(mobj_t* t1, angle_t angle, fixed_t distance)`
 pub fn p_aim_line_attack(
     source_idx: usize,
     angle: Angle,
-    range: Fixed,
-    state: &mut AttackState,
-    ctx: &dyn MapCombatContext,
-) {
-    let (source_x, source_y, source_z) = ctx.thing_pos(source_idx);
-    let source_h = ctx.thing_height(source_idx);
+    distance: Fixed,
+    ctx: &mut dyn MapContext,
+) -> Fixed {
+    let (x1, y1, x2, y2);
 
-    state.attack_angle = angle;
-    state.attack_x = source_x;
-    state.attack_y = source_y;
-    state.shoot_z = Fixed::new(source_z.0 + (source_h.0 >> 1) + 8 * FRACUNIT);
-    state.attack_range = range;
-    state.top_slope = Fixed::new(100 * FRACUNIT / 160);
-    state.bottom_slope = Fixed::new(-(100 * FRACUNIT / 160));
-    state.line_target = None;
-    state.aim_slope = Fixed::ZERO;
+    // Set up module-level attack state
+    unsafe {
+        MAP.shootthing = Some(source_idx);
+        MAP.attackrange = distance;
+        MAP.la_damage = 0;
+        MAP.shoot_hit = ShootHit::Nothing;
+        MAP.shoot_special_count = 0;
 
-    // In a full implementation, this would call P_PathTraverse with
-    // ptr_aim_traverse as the callback, iterating through the blockmap
-    // along the attack line. The traversal populates state.aim_slope
-    // and state.line_target.
-    //
-    // For now, the traversal infrastructure lives in movement.rs/maputl.rs.
-    // The callback function ptr_aim_traverse (above) is ready to be wired
-    // into the full P_PathTraverse call.
+        linetarget = None;
+        aimslope = Fixed(0);
+
+        // Compute shot origin height: z + height/2 + 8*FRACUNIT
+        let mobjs = ctx.mobjs();
+        let source = &mobjs[source_idx];
+        MAP.shootz = Fixed(source.z.0 + (source.height.0 >> 1) + 8 * FRACUNIT);
+
+        // Compute trace endpoint from angle and distance
+        let fine = angle.to_fine_angle();
+        let dist_int = distance.0 >> FRACBITS;
+        x1 = source.x;
+        y1 = source.y;
+        x2 = Fixed(x1.0 + dist_int * finecosine(fine).0);
+        y2 = Fixed(y1.0 + dist_int * FINESINE[fine].0);
+
+        // Store trace data for callback access
+        MAP.trace_x = x1;
+        MAP.trace_y = y1;
+        MAP.trace_dx = Fixed(x2.0 - x1.0);
+        MAP.trace_dy = Fixed(y2.0 - y1.0);
+
+        // Initialize auto-aim slope window:
+        // ±100*FRACUNIT/160 ≈ ±0.625 (about ±32° vertical)
+        sight::topslope = Fixed(100 * FRACUNIT / 160);
+        sight::bottomslope = Fixed(-(100 * FRACUNIT / 160));
+
+        // Stash level data pointers for callback access
+        stash_level_data(ctx);
+    }
+
+    // Execute the path traverse via trait method (avoids borrow conflicts)
+    ctx.do_path_traverse(x1, y1, x2, y2, PT_ADDLINES | PT_ADDTHINGS, ptr_aim_traverse);
+
+    // Return the determined aim slope
+    unsafe {
+        if linetarget.is_some() {
+            aimslope
+        } else {
+            Fixed(0)
+        }
+    }
 }
 
-// =============================================================================
-// P_LineAttack — Fire hitscan weapon along a line
-// Translated from p_map.c lines 1370-1425
-// =============================================================================
+// =========================================================================
+// P_LineAttack — fire hitscan (p_map.c 1062-1086)
+// =========================================================================
 
-/// Fire a hitscan attack from `source` along `angle` with vertical `slope`
-/// out to `range`, dealing `damage` on hit.
+/// Fire a hitscan ray from `source_idx` along `angle` at `slope` for
+/// `distance`, dealing `damage` to whatever is hit.
 ///
-/// This calls P_PathTraverse with ptr_shoot_traverse as the callback.
+/// Spawns a puff on wall hits and blood on thing hits.
+/// Sets `linetarget` to the hit thing (if any).
 ///
-/// # Arguments
-///
-/// * `source_idx` — Index of the attacking mobj
-/// * `angle` — Horizontal attack angle
-/// * `range` — Maximum attack distance
-/// * `slope` — Vertical aim slope (from auto-aim or manual)
-/// * `damage` — Damage to deal on hit
-/// * `state` — Mutable attack state
-/// * `ctx` — Map combat context
+/// Original C: `void P_LineAttack(mobj_t* t1, angle_t angle, fixed_t distance,
+///              fixed_t slope, int damage)`
 pub fn p_line_attack(
     source_idx: usize,
     angle: Angle,
-    range: Fixed,
+    distance: Fixed,
     slope: Fixed,
     damage: i32,
-    state: &mut AttackState,
-    ctx: &mut dyn MapCombatContext,
+    ctx: &mut dyn MapContext,
 ) {
-    let (source_x, source_y, source_z) = ctx.thing_pos(source_idx);
-    let source_h = ctx.thing_height(source_idx);
+    let (x1, y1, x2, y2);
 
-    state.la_damage = damage;
-    state.attack_angle = angle;
-    state.attack_x = source_x;
-    state.attack_y = source_y;
-    state.shoot_z = Fixed::new(source_z.0 + (source_h.0 >> 1) + 8 * FRACUNIT);
-    state.attack_range = range;
-    state.aim_slope = slope;
-    state.line_target = None;
-    state.shoot_finished = false;
+    // Set up module-level attack state
+    unsafe {
+        MAP.shootthing = Some(source_idx);
+        MAP.la_damage = damage;
+        MAP.attackrange = distance;
+        MAP.shoot_hit = ShootHit::Nothing;
+        MAP.shoot_special_count = 0;
 
-    // In a full implementation, this calls P_PathTraverse with
-    // ptr_shoot_traverse as the callback along the attack direction.
-}
+        aimslope = slope;
+        linetarget = None;
 
-// =============================================================================
-// P_UseLines — Player "use" — scan for usable lines
-// Translated from p_map.c lines 1440-1475
-// =============================================================================
+        // Compute shot origin height
+        let mobjs = ctx.mobjs();
+        let source = &mobjs[source_idx];
+        MAP.shootz = Fixed(source.z.0 + (source.height.0 >> 1) + 8 * FRACUNIT);
 
-/// State for use-line scanning.
-#[derive(Debug, Clone)]
-pub struct UseState {
-    /// The player (mobj) performing the use action.
-    pub user_idx: usize,
-    /// Whether a usable line was found during traversal.
-    pub use_thing_found: bool,
-}
+        // Compute trace endpoint
+        let fine = angle.to_fine_angle();
+        let dist_int = distance.0 >> FRACBITS;
+        x1 = source.x;
+        y1 = source.y;
+        x2 = Fixed(x1.0 + dist_int * finecosine(fine).0);
+        y2 = Fixed(y1.0 + dist_int * FINESINE[fine].0);
 
-/// Scan for usable lines in front of the player.
-///
-/// Traces along the player's facing angle out to `USE_RANGE` and calls
-/// `ptr_use_traverse` for each line intercept.
-pub fn p_use_lines(
-    player_mobj_idx: usize,
-    _player_angle: Angle,
-    _ctx: &mut dyn MapCombatContext,
-) -> UseState {
-    // In the full implementation, this calls P_PathTraverse along
-    // player_angle out to USE_RANGE with ptr_use_traverse as the callback.
+        MAP.trace_x = x1;
+        MAP.trace_y = y1;
+        MAP.trace_dx = Fixed(x2.0 - x1.0);
+        MAP.trace_dy = Fixed(y2.0 - y1.0);
 
-    UseState {
-        user_idx: player_mobj_idx,
-        use_thing_found: false,
+        // Stash level data pointers
+        stash_level_data(ctx);
     }
-}
 
-/// Use-line traversal callback.
-///
-/// For each line intercept, check if the line has a special action and
-/// if so, call `use_special_line`.
-///
-/// Returns `true` to stop traversal, `false` to continue.
-pub fn ptr_use_traverse(
-    use_state: &mut UseState,
-    line_idx: usize,
-    side: i32,
-    ctx: &mut dyn MapCombatContext,
-) -> bool {
-    let special = ctx.line_special(line_idx);
-    if special == 0 {
-        // Not a special line — check if it blocks movement
-        let back = ctx.line_backsector(line_idx);
-        if back.is_none() {
-            // One-sided line — can't use
-            return true;
+    // Execute the path traverse
+    ctx.do_path_traverse(
+        x1,
+        y1,
+        x2,
+        y2,
+        PT_ADDLINES | PT_ADDTHINGS,
+        ptr_shoot_traverse,
+    );
+
+    // --- Post-traverse dispatch ---
+
+    // 1. Activate special lines that were shot
+    let special_count;
+    let mut specials = [0usize; MAX_SHOOT_SPECIALS];
+    let shootthing;
+    unsafe {
+        special_count = MAP.shoot_special_count;
+        specials[..special_count].copy_from_slice(&MAP.shoot_specials[..special_count]);
+        shootthing = MAP.shootthing;
+    }
+    if let Some(st) = shootthing {
+        for spec in specials.iter().take(special_count) {
+            ctx.p_shoot_special_line(st, *spec);
         }
-        let opening = ctx.line_opening(line_idx);
-        if opening.ceiling == opening.floor {
-            // Closed — can't use
-            return true;
+    }
+
+    // 2. Handle the hit result
+    let hit;
+    let la_damage;
+    let at_melee_range;
+    unsafe {
+        hit = MAP.shoot_hit;
+        la_damage = MAP.la_damage;
+        at_melee_range = MAP.attackrange.0 == MELEERANGE;
+    }
+
+    match hit {
+        ShootHit::Nothing | ShootHit::Sky => {
+            // Nothing to do
         }
-        return false; // Continue scanning
-    }
-
-    // Has a special — use it
-    ctx.use_special_line(use_state.user_idx, line_idx, side);
-    use_state.use_thing_found = true;
-    true // Stop after first usable line
-}
-
-// =============================================================================
-// P_RadiusAttack — Splash/radius damage
-// Translated from p_map.c lines 1480-1540
-// =============================================================================
-
-/// Apply radius (splash) damage from `source` centered at `spot` with
-/// the given damage.
-///
-/// Iterates through things in the blockmap around `spot` and applies
-/// `pit_radius_attack` to each.
-pub fn p_radius_attack(
-    spot_idx: usize,
-    source_idx: Option<usize>,
-    damage: i32,
-    ctx: &mut dyn MapCombatContext,
-) {
-    let (spot_x, spot_y, _spot_z) = ctx.thing_pos(spot_idx);
-    let bomb_dist = Fixed::new(damage * FRACUNIT); // blast radius
-
-    // In a full implementation, iterate things in blockmap within bomb_dist
-    // of spot position and call pit_radius_attack for each.
-    // The blockmap iteration is handled by P_BlockThingsIterator in maputl.rs.
-    let _ = (spot_x, spot_y, bomb_dist, source_idx);
-}
-
-/// Per-thing check for radius damage.
-///
-/// Returns `true` if the thing should continue to be checked (always true —
-/// we check everything in range).
-pub fn pit_radius_attack(
-    thing_idx: usize,
-    spot_idx: usize,
-    source_idx: Option<usize>,
-    damage: i32,
-    ctx: &mut dyn MapCombatContext,
-) -> bool {
-    let flags = ctx.thing_flags(thing_idx);
-    if flags & MF_SHOOTABLE == 0 {
-        return true;
-    }
-
-    // Cyberdemons and Spider Masterminds take no splash damage
-    // (types MT_CYBORG and MT_SPIDER — handled at higher level)
-
-    let (thing_x, thing_y, _) = ctx.thing_pos(thing_idx);
-    let (spot_x, spot_y, _) = ctx.thing_pos(spot_idx);
-
-    let dx = Fixed::new((thing_x.0 - spot_x.0).abs());
-    let dy = Fixed::new((thing_y.0 - spot_y.0).abs());
-
-    // Use the greater of dx, dy as the approximate distance
-    let dist_val = if dx > dy { dx } else { dy };
-    // Subtract the thing's radius
-    let thing_r = ctx.thing_radius(thing_idx);
-    let dist = Fixed::new(dist_val.0 - thing_r.0);
-
-    let bomb_damage = Fixed::new(damage * FRACUNIT);
-    if dist.0 >= bomb_damage.0 {
-        return true; // Out of range
-    }
-
-    // Actual damage scales linearly: damage * (1 - dist/damage)
-    let actual_damage = damage - (dist.0 >> FRACBITS);
-    if actual_damage > 0 {
-        ctx.damage_mobj(thing_idx, Some(spot_idx), source_idx, actual_damage);
-    }
-
-    true
-}
-
-// =============================================================================
-// P_ChangeSector — Notify things in a sector of height change
-// Translated from p_map.c lines 1550-1620
-// =============================================================================
-
-/// Result of changing sector heights and checking for things that don't fit.
-#[derive(Debug, Clone)]
-pub struct ChangeSectorResult {
-    /// Whether any thing in the sector was crushed.
-    pub no_fit: bool,
-    /// Whether we should apply crush damage.
-    pub crush_damage: bool,
-    /// List of things that were crushed (for blood spawning).
-    pub crushed_things: Vec<usize>,
-}
-
-/// Notify all things in a sector that its height has changed.
-///
-/// Checks each thing in the sector against the new floor/ceiling heights.
-/// If `crush_damage` is true and a thing doesn't fit, it takes crush damage.
-///
-/// Returns a `ChangeSectorResult` indicating whether any thing was crushed.
-pub fn p_change_sector(
-    sector_idx: usize,
-    crush_damage: bool,
-    ctx: &dyn MapCombatContext,
-) -> ChangeSectorResult {
-    let mut result = ChangeSectorResult {
-        no_fit: false,
-        crush_damage,
-        crushed_things: Vec::new(),
-    };
-
-    let floor = ctx.sector_floorheight(sector_idx);
-    let ceiling = ctx.sector_ceilingheight(sector_idx);
-
-    // Check every thing in the sector
-    let things = ctx.sector_things(sector_idx);
-    for &thing_idx in &things {
-        let flags = ctx.thing_flags(thing_idx);
-        if flags & MF_NOBLOCKMAP != 0 {
-            continue; // Not in blockmap — skip
+        ShootHit::Wall { x, y, z } => {
+            ctx.p_spawn_puff(x, y, z, at_melee_range);
         }
+        ShootHit::Thing {
+            target_idx,
+            x,
+            y,
+            z,
+            no_blood,
+        } => {
+            if no_blood {
+                ctx.p_spawn_puff(x, y, z, at_melee_range);
+            } else {
+                ctx.p_spawn_blood(x, y, z, la_damage);
+            }
+            if la_damage != 0 {
+                unsafe {
+                    linetarget = Some(target_idx);
+                }
+                ctx.p_damage_mobj(target_idx, shootthing, shootthing, la_damage);
+            }
+        }
+    }
+}
 
-        let (_, _, thing_z) = ctx.thing_pos(thing_idx);
-        let thing_h = ctx.thing_height(thing_idx);
+// =========================================================================
+// P_UseLines — use special lines in front of the player (p_map.c 1130-1148)
+// =========================================================================
 
-        // Check if the thing fits between floor and ceiling
-        let top_z = Fixed::new(thing_z.0 + thing_h.0);
-        if top_z.0 > ceiling.0 || thing_z.0 < floor.0 {
-            result.no_fit = true;
-            if crush_damage && flags & MF_SHOOTABLE != 0 {
-                result.crushed_things.push(thing_idx);
+/// Activate special lines in front of the player.
+///
+/// Traces a ray `USERANGE` units ahead of the player and activates the first
+/// special line found, or plays the "oof" sound if the way is blocked.
+///
+/// Original C: `void P_UseLines(player_t* player)`
+pub fn p_use_lines(player_idx: usize, ctx: &mut dyn MapContext) {
+    let (x1, y1, x2, y2);
+
+    // Set up use-line state
+    unsafe {
+        let players = ctx.players();
+        let player = &players[player_idx];
+        let mo_idx = match player.mobj {
+            Some(idx) => idx,
+            None => return,
+        };
+        MAP.usething = Some(mo_idx);
+        MAP.use_result = UseResult::Nothing;
+
+        let mobjs = ctx.mobjs();
+        let mo = &mobjs[mo_idx];
+        let angle = mo.angle;
+
+        let fine = angle.to_fine_angle();
+        let dist_int = USERANGE >> FRACBITS;
+        x1 = mo.x;
+        y1 = mo.y;
+        x2 = Fixed(x1.0 + dist_int * finecosine(fine).0);
+        y2 = Fixed(y1.0 + dist_int * FINESINE[fine].0);
+
+        MAP.trace_x = x1;
+        MAP.trace_y = y1;
+        MAP.trace_dx = Fixed(x2.0 - x1.0);
+        MAP.trace_dy = Fixed(y2.0 - y1.0);
+
+        // Stash level data pointers
+        stash_level_data(ctx);
+    }
+
+    // Execute the path traverse (lines only, no things)
+    ctx.do_path_traverse(x1, y1, x2, y2, PT_ADDLINES, ptr_use_traverse);
+
+    // Post-traverse dispatch
+    let use_result;
+    let usething;
+    unsafe {
+        use_result = MAP.use_result;
+        usething = MAP.usething;
+    }
+
+    match use_result {
+        UseResult::Nothing => {
+            // Nothing happened
+        }
+        UseResult::NoWay { mobj_idx } => {
+            ctx.s_start_sound(Some(mobj_idx), SfxEnum::sfx_noway);
+        }
+        UseResult::UseSpecial { line_idx, side } => {
+            if let Some(thing_idx) = usething {
+                ctx.p_use_special_line(thing_idx, line_idx, side);
+            }
+        }
+    }
+}
+
+// =========================================================================
+// P_RadiusAttack — splash damage (p_map.c 1164-1233)
+// =========================================================================
+
+/// Apply splash (radius) damage from an explosion.
+///
+/// Iterates over all things in the affected blockmap area and applies
+/// distance-based damage to each visible, shootable target.
+///
+/// Boss immunity: `MT_CYBORG` and `MT_SPIDER` take no splash damage.
+///
+/// Original C: `void P_RadiusAttack(mobj_t* spot, mobj_t* source, int damage)`
+pub fn p_radius_attack(spot_idx: usize, source_idx: usize, damage: i32, ctx: &mut dyn MapContext) {
+    // Compute the radius in fixed-point.
+    // Original C: dist = (damage+MAXRADIUS) << FRACBITS;
+    // NOTE: This overflows in 32-bit C (MAXRADIUS = 32*65536 = 2097152).
+    // Through wrapping arithmetic the MAXRADIUS term vanishes, giving
+    // dist ≈ damage << FRACBITS effectively.  We reproduce the exact
+    // wrapping behavior to maintain parity.
+    let dist_raw = damage.wrapping_add(MAXRADIUS).wrapping_shl(FRACBITS as u32);
+    let dist = Fixed(dist_raw);
+
+    // Read the explosion center position
+    let (spot_x, spot_y);
+    {
+        let mobjs = ctx.mobjs();
+        let spot = &mobjs[spot_idx];
+        spot_x = spot.x;
+        spot_y = spot.y;
+    }
+
+    // Compute blockmap bounds
+    let orgx = ctx.bmap_orgx();
+    let orgy = ctx.bmap_orgy();
+    let bw = ctx.bmap_width();
+    let bh = ctx.bmap_height();
+
+    let yh = (spot_y.0 + dist.0 - orgy.0) >> MAPBLOCKSHIFT;
+    let yl = (spot_y.0 - dist.0 - orgy.0) >> MAPBLOCKSHIFT;
+    let xh = (spot_x.0 + dist.0 - orgx.0) >> MAPBLOCKSHIFT;
+    let xl = (spot_x.0 - dist.0 - orgx.0) >> MAPBLOCKSHIFT;
+
+    // Iterate blockmap cells and apply splash damage
+    for by in yl..=yh {
+        for bx in xl..=xh {
+            // Bounds check
+            if bx < 0 || bx >= bw || by < 0 || by >= bh {
+                continue;
+            }
+
+            // Manual blockmap iteration (can't use p_block_things_iterator
+            // because we need mutable context for sight checks and damage)
+            let link_idx = (by * bw + bx) as usize;
+            let mut mobj_opt = ctx.blocklinks()[link_idx];
+
+            while let Some(thing_idx) = mobj_opt {
+                // Read next link before potentially modifying things
+                let next;
+                {
+                    let mobjs = ctx.mobjs();
+                    next = mobjs[thing_idx].bnext;
+                }
+
+                // --- PIT_RadiusAttack logic (p_map.c 1164-1198) ---
+                let should_damage;
+                {
+                    let mobjs = ctx.mobjs();
+                    let thing = &mobjs[thing_idx];
+
+                    // Must be shootable
+                    if !thing.flags.contains(MobjFlags::MF_SHOOTABLE) {
+                        mobj_opt = next;
+                        continue;
+                    }
+
+                    // Boss immunity: Cyberdemons and Spider Masterminds
+                    if thing.type_ == MobjType::MT_CYBORG as usize
+                        || thing.type_ == MobjType::MT_SPIDER as usize
+                    {
+                        mobj_opt = next;
+                        continue;
+                    }
+
+                    // Distance check: Chebyshev distance (max of |dx|, |dy|)
+                    let dx = (thing.x.0 - spot_x.0).abs();
+                    let dy = (thing.y.0 - spot_y.0).abs();
+                    let mut thing_dist = if dx > dy { dx } else { dy };
+                    thing_dist = (thing_dist - thing.radius.0) >> FRACBITS;
+                    if thing_dist < 0 {
+                        thing_dist = 0;
+                    }
+
+                    if thing_dist >= damage {
+                        mobj_opt = next;
+                        continue;
+                    }
+
+                    should_damage = damage - thing_dist;
+                }
+
+                // Line-of-sight check between target and explosion center
+                if ctx.p_check_sight(thing_idx, spot_idx) {
+                    ctx.p_damage_mobj(thing_idx, Some(spot_idx), Some(source_idx), should_damage);
+                }
+
+                mobj_opt = next;
+            }
+        }
+    }
+}
+
+// =========================================================================
+// P_ChangeSector — sector height change processing (p_map.c 1250-1338)
+// =========================================================================
+
+/// Process height changes for a sector (crushing).
+///
+/// Iterates over all things touching the sector's blockmap area and applies
+/// height-clipping. Things that no longer fit are crushed: corpses become
+/// gibs, dropped items are removed, and living things take 10 damage every
+/// 4 tics with blood spray.
+///
+/// Returns `true` if any thing did not fit (`nofit`).
+///
+/// Original C: `boolean P_ChangeSector(sector_t* sector, boolean crunch)`
+pub fn p_change_sector(sector_idx: usize, crunch: bool, ctx: &mut dyn MapContext) -> bool {
+    let mut nofit = false;
+    let crushchange = crunch;
+
+    // Get the sector's blockbox (blockmap cell bounds)
+    let (bb_top, bb_bottom, bb_left, bb_right);
+    {
+        let sectors = ctx.sectors();
+        let sector = &sectors[sector_idx];
+        bb_top = sector.blockbox[BOXTOP];
+        bb_bottom = sector.blockbox[BOXBOTTOM];
+        bb_left = sector.blockbox[BOXLEFT];
+        bb_right = sector.blockbox[BOXRIGHT];
+    }
+
+    let bw = ctx.bmap_width();
+    let bh = ctx.bmap_height();
+    let leveltime = ctx.leveltime();
+
+    // Iterate over all blockmap cells covered by the sector
+    for by in bb_bottom..=bb_top {
+        for bx in bb_left..=bb_right {
+            // Bounds check
+            if bx < 0 || bx >= bw || by < 0 || by >= bh {
+                continue;
+            }
+
+            // Manual blockmap linked-list iteration
+            let link_idx = (by * bw + bx) as usize;
+            let mut mobj_opt = ctx.blocklinks()[link_idx];
+
+            while let Some(thing_idx) = mobj_opt {
+                // Read next link before modifying things
+                let next;
+                {
+                    let mobjs = ctx.mobjs();
+                    next = mobjs[thing_idx].bnext;
+                }
+
+                // --- PIT_ChangeSector logic (p_map.c 1257-1313) ---
+
+                // Try to fit the thing into the new sector geometry
+                if ctx.p_thing_height_clip(thing_idx) {
+                    // Thing fits — continue
+                    mobj_opt = next;
+                    continue;
+                }
+
+                // Thing doesn't fit.
+                let thing_health;
+                let thing_flags;
+                {
+                    let mobjs = ctx.mobjs();
+                    let thing = &mobjs[thing_idx];
+                    thing_health = thing.health;
+                    thing_flags = thing.flags;
+                }
+
+                // Dead things (health <= 0): crunch to gibs
+                if thing_health <= 0 {
+                    ctx.p_set_mobj_state(thing_idx, StateNum::S_GIBS);
+                    {
+                        let mobjs = ctx.mobjs_mut();
+                        let thing = &mut mobjs[thing_idx];
+                        thing.flags &= !MobjFlags::MF_SOLID;
+                        thing.height = Fixed(0);
+                        thing.radius = Fixed(0);
+                    }
+                    mobj_opt = next;
+                    continue;
+                }
+
+                // Dropped items: remove entirely
+                if thing_flags.contains(MobjFlags::MF_DROPPED) {
+                    ctx.p_remove_mobj(thing_idx);
+                    mobj_opt = next;
+                    continue;
+                }
+
+                // Non-shootable things: don't interact with crushing
+                if !thing_flags.contains(MobjFlags::MF_SHOOTABLE) {
+                    mobj_opt = next;
+                    continue;
+                }
+
+                // Living, shootable thing — it's being crushed
+                nofit = true;
+
+                if crushchange && (leveltime & 3) == 0 {
+                    // Apply crush damage (10 hp) every 4 tics
+                    ctx.p_damage_mobj(thing_idx, None, None, 10);
+
+                    // Spawn blood spray with random momentum
+                    let (bx_pos, by_pos, bz_pos);
+                    {
+                        let mobjs = ctx.mobjs();
+                        let thing = &mobjs[thing_idx];
+                        bx_pos = thing.x;
+                        by_pos = thing.y;
+                        bz_pos = Fixed(thing.z.0 + (thing.height.0 >> 1));
+                    }
+                    let blood_idx = ctx.p_spawn_mobj(bx_pos, by_pos, bz_pos, MobjType::MT_BLOOD);
+
+                    // Random momentum for the blood splat
+                    let rng = ctx.rng_mut();
+                    let rnd1 = rng.p_random() as i32;
+                    let rnd2 = rng.p_random() as i32;
+                    let momx = Fixed((rnd1 - rnd2) << 12);
+                    let rnd3 = rng.p_random() as i32;
+                    let rnd4 = rng.p_random() as i32;
+                    let momy = Fixed((rnd3 - rnd4) << 12);
+
+                    {
+                        let mobjs = ctx.mobjs_mut();
+                        let blood = &mut mobjs[blood_idx];
+                        blood.momx = momx;
+                        blood.momy = momy;
+                    }
+                }
+
+                mobj_opt = next;
             }
         }
     }
 
-    result
-}
-
-// =============================================================================
-// Unit tests
-// =============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_constants() {
-        // AIM_RANGE = 100 * 65536 / 160 = 40960
-        assert_eq!(AIM_RANGE.0, 100 * 65536 / 160);
-
-        // MISSILE_RANGE = 32 * 64 * 65536
-        assert_eq!(MISSILE_RANGE.0, 32 * 64 * 65536);
-
-        // MELEE_RANGE = 64 * 65536 + 65536 = 65 * 65536
-        assert_eq!(MELEE_RANGE.0, 65 * 65536);
-
-        // USE_RANGE = 64 * 65536
-        assert_eq!(USE_RANGE.0, 64 * 65536);
-    }
-
-    #[test]
-    fn test_attack_state_default() {
-        let state = AttackState::new();
-        assert_eq!(state.la_damage, 0);
-        assert_eq!(state.attack_range.0, 0);
-        assert_eq!(state.aim_slope.0, 0);
-        assert!(state.line_target.is_none());
-        assert!(!state.shoot_finished);
-    }
-
-    #[test]
-    fn test_change_sector_result_empty() {
-        let result = ChangeSectorResult {
-            no_fit: false,
-            crush_damage: false,
-            crushed_things: Vec::new(),
-        };
-        assert!(!result.no_fit);
-        assert!(result.crushed_things.is_empty());
-    }
-
-    #[test]
-    fn test_use_state_default() {
-        let state = UseState {
-            user_idx: 0,
-            use_thing_found: false,
-        };
-        assert_eq!(state.user_idx, 0);
-        assert!(!state.use_thing_found);
-    }
-
-    #[test]
-    fn test_pit_radius_attack_out_of_range() {
-        // Verify that the pit_radius_attack logic correctly identifies
-        // that damage is zero when distance exceeds blast radius.
-        // (This test validates the distance calculation without a full context.)
-        let damage: i32 = 128;
-        let bomb_damage = Fixed::new(damage * FRACUNIT);
-        // If dist >= bomb_damage, thing is out of range
-        let dist = Fixed::new(129 * FRACUNIT);
-        assert!(dist.0 >= bomb_damage.0);
-    }
-
-    #[test]
-    fn test_pit_radius_attack_in_range_damage_calc() {
-        let damage: i32 = 128;
-        // dist = 64 * FRACUNIT, so actual_damage = 128 - 64 = 64
-        let dist = Fixed::new(64 * FRACUNIT);
-        let actual = damage - (dist.0 >> FRACBITS);
-        assert_eq!(actual, 64);
-    }
+    nofit
 }
