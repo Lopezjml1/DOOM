@@ -814,6 +814,12 @@ pub trait SpecContext {
     fn init_active_ceilings(&mut self);
     fn init_active_plats(&mut self);
 
+    // --- Cross-module: Texture height lookup ---
+    /// Return the height of a texture (in 16.16 fixed-point) given a texture
+    /// number.  Equivalent to the C global `textureheight[texnum]` in r_data.c.
+    /// Used by `EV_DoFloor` for the `raiseToTexture` floor type.
+    fn texture_height(&self, texnum: i32) -> Fixed;
+
     // --- Subsector lookup ---
     /// Returns the sector index for a given subsector index.
     fn subsector_sector(&self, subsector_idx: usize) -> usize;
