@@ -1703,22 +1703,28 @@ fn ceiling_type_from_i32(v: i32) -> crate::play::spec::CeilingType {
 }
 
 /// Convert a raw i32 to VldoorType. Falls back to Normal.
+///
+/// Values must match the Rust `#[repr(i32)]` discriminants of `VldoorType`
+/// in spec.rs, which is what the save-game WRITE path outputs via `as i32`.
 fn door_type_from_i32(v: i32) -> crate::play::spec::VldoorType {
     use crate::play::spec::VldoorType;
     match v {
         0 => VldoorType::Normal,
-        1 => VldoorType::Close30ThenOpen,
-        2 => VldoorType::Close,
-        3 => VldoorType::Open,
-        4 => VldoorType::RaiseIn5Mins,
-        5 => VldoorType::BlazeRaise,
-        6 => VldoorType::BlazeOpen,
-        7 => VldoorType::BlazeClose,
+        1 => VldoorType::Close,
+        2 => VldoorType::Open,
+        3 => VldoorType::RaiseIn5Mins,
+        4 => VldoorType::BlazeRaise,
+        5 => VldoorType::BlazeOpen,
+        6 => VldoorType::BlazeClose,
+        7 => VldoorType::Close30ThenOpen,
         _ => VldoorType::Normal,
     }
 }
 
 /// Convert a raw i32 to FloorType. Falls back to LowerFloor.
+///
+/// Values must match the Rust `#[repr(i32)]` discriminants of `FloorType`
+/// in spec.rs, which is what the save-game WRITE path outputs via `as i32`.
 fn floor_type_from_i32(v: i32) -> crate::play::spec::FloorType {
     use crate::play::spec::FloorType;
     match v {
@@ -1730,24 +1736,28 @@ fn floor_type_from_i32(v: i32) -> crate::play::spec::FloorType {
         5 => FloorType::RaiseToTexture,
         6 => FloorType::LowerAndChange,
         7 => FloorType::RaiseFloor24,
-        8 => FloorType::RaiseFloor24AndChange,
-        9 => FloorType::RaiseFloorCrush,
-        10 => FloorType::RaiseFloorTurbo,
-        11 => FloorType::DonutRaise,
-        12 => FloorType::RaiseFloor512,
+        8 => FloorType::RaiseFloor512,
+        9 => FloorType::RaiseFloor24AndChange,
+        10 => FloorType::RaiseFloorCrush,
+        11 => FloorType::RaiseFloorTurbo,
+        12 => FloorType::DonutRaise,
         _ => FloorType::LowerFloor,
     }
 }
 
-/// Convert a raw i32 to PlatType. Falls back to RaiseToNearestAndChange.
+/// Convert a raw i32 to PlatType. Falls back to PerpetualRaise.
+///
+/// Values must match the Rust `#[repr(i32)]` discriminants of `PlatType`
+/// in spec.rs, which is what the save-game WRITE path outputs via `as i32`.
 fn plat_type_from_i32(v: i32) -> crate::play::spec::PlatType {
     use crate::play::spec::PlatType;
     match v {
-        0 => PlatType::RaiseToNearestAndChange,
+        0 => PlatType::PerpetualRaise,
         1 => PlatType::DownWaitUpStay,
-        2 => PlatType::BlazeDWUS,
-        3 => PlatType::PerpetualRaise,
-        _ => PlatType::RaiseToNearestAndChange,
+        2 => PlatType::RaiseAndChange,
+        3 => PlatType::RaiseToNearestAndChange,
+        4 => PlatType::BlazeDWUS,
+        _ => PlatType::PerpetualRaise,
     }
 }
 

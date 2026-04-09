@@ -1,3 +1,16 @@
+// DOOM Rust Port — Copyright (C) 1993-1996 id Software, Inc.
+// Copyright (C) 2024 Rust DOOM Contributors
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; either version 2
+// of the License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+
 //! Enemy thinking, AI. Action Pointer Functions associated with states/frames.
 //! Translated from linuxdoom-1.10/p_enemy.c
 //!
@@ -8,7 +21,6 @@
 use crate::info::mobjinfo::{MobjType, MOBJINFO};
 use crate::info::sounds::SfxEnum;
 // SpriteNum used indirectly through state machine
-use crate::info::sounds::NUMSFX;
 use crate::info::states::{StateNum, STATES};
 use crate::play::maputl::p_aprox_distance;
 use crate::play::spec::{FloorType, VldoorType};
@@ -22,15 +34,127 @@ use crate::types::player::Player;
 use crate::types::tables::{finecosine, point_to_angle2, FINESINE};
 use crate::util::random::DoomRandom;
 
-/// Safely convert a usize to SfxEnum. Returns None if out of range.
+use std::cell::RefCell;
+
+/// Constant lookup table of all SfxEnum variants in discriminant order.
+/// Used for safe index-based conversion without `transmute`.
+const SFX_VARIANTS: [SfxEnum; 109] = [
+    SfxEnum::sfx_None,
+    SfxEnum::sfx_pistol,
+    SfxEnum::sfx_shotgn,
+    SfxEnum::sfx_sgcock,
+    SfxEnum::sfx_dshtgn,
+    SfxEnum::sfx_dbopn,
+    SfxEnum::sfx_dbcls,
+    SfxEnum::sfx_dbload,
+    SfxEnum::sfx_plasma,
+    SfxEnum::sfx_bfg,
+    SfxEnum::sfx_sawup,
+    SfxEnum::sfx_sawidl,
+    SfxEnum::sfx_sawful,
+    SfxEnum::sfx_sawhit,
+    SfxEnum::sfx_rlaunc,
+    SfxEnum::sfx_rxplod,
+    SfxEnum::sfx_firsht,
+    SfxEnum::sfx_firxpl,
+    SfxEnum::sfx_pstart,
+    SfxEnum::sfx_pstop,
+    SfxEnum::sfx_doropn,
+    SfxEnum::sfx_dorcls,
+    SfxEnum::sfx_stnmov,
+    SfxEnum::sfx_swtchn,
+    SfxEnum::sfx_swtchx,
+    SfxEnum::sfx_plpain,
+    SfxEnum::sfx_dmpain,
+    SfxEnum::sfx_popain,
+    SfxEnum::sfx_vipain,
+    SfxEnum::sfx_mnpain,
+    SfxEnum::sfx_pepain,
+    SfxEnum::sfx_slop,
+    SfxEnum::sfx_itemup,
+    SfxEnum::sfx_wpnup,
+    SfxEnum::sfx_oof,
+    SfxEnum::sfx_telept,
+    SfxEnum::sfx_posit1,
+    SfxEnum::sfx_posit2,
+    SfxEnum::sfx_posit3,
+    SfxEnum::sfx_bgsit1,
+    SfxEnum::sfx_bgsit2,
+    SfxEnum::sfx_sgtsit,
+    SfxEnum::sfx_cacsit,
+    SfxEnum::sfx_brssit,
+    SfxEnum::sfx_cybsit,
+    SfxEnum::sfx_spisit,
+    SfxEnum::sfx_bspsit,
+    SfxEnum::sfx_kntsit,
+    SfxEnum::sfx_vilsit,
+    SfxEnum::sfx_mansit,
+    SfxEnum::sfx_pesit,
+    SfxEnum::sfx_sklatk,
+    SfxEnum::sfx_sgtatk,
+    SfxEnum::sfx_skepch,
+    SfxEnum::sfx_vilatk,
+    SfxEnum::sfx_claw,
+    SfxEnum::sfx_skeswg,
+    SfxEnum::sfx_pldeth,
+    SfxEnum::sfx_pdiehi,
+    SfxEnum::sfx_podth1,
+    SfxEnum::sfx_podth2,
+    SfxEnum::sfx_podth3,
+    SfxEnum::sfx_bgdth1,
+    SfxEnum::sfx_bgdth2,
+    SfxEnum::sfx_sgtdth,
+    SfxEnum::sfx_cacdth,
+    SfxEnum::sfx_skldth,
+    SfxEnum::sfx_brsdth,
+    SfxEnum::sfx_cybdth,
+    SfxEnum::sfx_spidth,
+    SfxEnum::sfx_bspdth,
+    SfxEnum::sfx_vildth,
+    SfxEnum::sfx_kntdth,
+    SfxEnum::sfx_pedth,
+    SfxEnum::sfx_skedth,
+    SfxEnum::sfx_posact,
+    SfxEnum::sfx_bgact,
+    SfxEnum::sfx_dmact,
+    SfxEnum::sfx_bspact,
+    SfxEnum::sfx_bspwlk,
+    SfxEnum::sfx_vilact,
+    SfxEnum::sfx_noway,
+    SfxEnum::sfx_barexp,
+    SfxEnum::sfx_punch,
+    SfxEnum::sfx_hoof,
+    SfxEnum::sfx_metal,
+    SfxEnum::sfx_chgun,
+    SfxEnum::sfx_tink,
+    SfxEnum::sfx_bdopn,
+    SfxEnum::sfx_bdcls,
+    SfxEnum::sfx_itmbk,
+    SfxEnum::sfx_flame,
+    SfxEnum::sfx_flamst,
+    SfxEnum::sfx_getpow,
+    SfxEnum::sfx_bospit,
+    SfxEnum::sfx_boscub,
+    SfxEnum::sfx_bossit,
+    SfxEnum::sfx_bospn,
+    SfxEnum::sfx_bosdth,
+    SfxEnum::sfx_manatk,
+    SfxEnum::sfx_mandth,
+    SfxEnum::sfx_sssit,
+    SfxEnum::sfx_ssdth,
+    SfxEnum::sfx_keenpn,
+    SfxEnum::sfx_keendt,
+    SfxEnum::sfx_skeact,
+    SfxEnum::sfx_skesit,
+    SfxEnum::sfx_skeatk,
+    SfxEnum::sfx_radio,
+];
+
+/// Safely convert a usize to SfxEnum via const lookup table.
+/// Returns None if out of range.
 #[inline]
 fn sfx_from_usize(val: usize) -> Option<SfxEnum> {
-    if val < NUMSFX {
-        // SAFETY: SfxEnum is #[repr(usize)] and val is within 0..NUMSFX.
-        Some(unsafe { std::mem::transmute::<usize, SfxEnum>(val) })
-    } else {
-        None
-    }
+    SFX_VARIANTS.get(val).copied()
 }
 
 // ============================================================================
@@ -253,19 +377,37 @@ const SKULLSPEED: Fixed = Fixed(20 * FRACUNIT);
 /// Maximum number of boss target spots.
 const MAX_BRAIN_TARGETS: usize = 32;
 
-/// Arena indices of MT_BOSSTARGET map objects.
-static mut BRAIN_TARGETS: [Option<usize>; MAX_BRAIN_TARGETS] = [None; MAX_BRAIN_TARGETS];
+/// Brain boss state — consolidates the C static globals for Icon of Sin logic.
+/// Replaces the four `static mut` variables (braintargets, numbraintargets,
+/// braintargeton, easy) with a safe struct accessed via thread_local.
+struct BrainState {
+    /// Arena indices of MT_BOSSTARGET map objects.
+    targets: [Option<usize>; MAX_BRAIN_TARGETS],
+    /// Number of valid entries in `targets`.
+    num_targets: usize,
+    /// Index of the next brain target to fire at (cycles through targets).
+    target_on: usize,
+    /// Easy-mode spit toggle: alternates 0/1 each call to A_BrainSpit.
+    /// On skill ≤ Easy, every other spit is skipped.
+    easy: i32,
+}
 
-/// Number of valid entries in BRAIN_TARGETS.
-static mut NUM_BRAIN_TARGETS: usize = 0;
+impl BrainState {
+    /// Create a zeroed/default brain state.
+    const fn new() -> Self {
+        Self {
+            targets: [None; MAX_BRAIN_TARGETS],
+            num_targets: 0,
+            target_on: 0,
+            easy: 0,
+        }
+    }
+}
 
-/// Index of the next brain target to fire at (cycles).
-static mut BRAIN_TARGET_ON: usize = 0;
-
-/// Easy-mode spit toggle: alternates 0/1 each call to A_BrainSpit.
-/// On skill ≤ Easy, every other spit is skipped.
-/// Original C: `static int easy = 0;` inside A_BrainSpit.
-static mut EASY: i32 = 0;
+thread_local! {
+    /// Thread-local brain state for the Icon of Sin boss fight.
+    static BRAIN: RefCell<BrainState> = const { RefCell::new(BrainState::new()) };
+}
 
 // ============================================================================
 // Sound Propagation — p_enemy.c lines 97-166
@@ -2148,21 +2290,21 @@ pub fn a_brain_awake(_actor_idx: usize, ctx: &mut dyn EnemyContext) {
     // Scan thinkers for MT_BOSSTARGET
     let mobj_indices = ctx.collect_mobj_thinker_indices();
 
-    unsafe {
-        NUM_BRAIN_TARGETS = 0;
-        BRAIN_TARGETS = [None; MAX_BRAIN_TARGETS];
-    }
+    BRAIN.with(|cell| {
+        let mut b = cell.borrow_mut();
+        b.num_targets = 0;
+        b.targets = [None; MAX_BRAIN_TARGETS];
 
-    for &idx in &mobj_indices {
-        if ctx.mobjs()[idx].type_ == MobjType::MT_BOSSTARGET as usize {
-            unsafe {
-                if NUM_BRAIN_TARGETS < MAX_BRAIN_TARGETS {
-                    BRAIN_TARGETS[NUM_BRAIN_TARGETS] = Some(idx);
-                    NUM_BRAIN_TARGETS += 1;
-                }
+        for &idx in &mobj_indices {
+            if ctx.mobjs()[idx].type_ == MobjType::MT_BOSSTARGET as usize
+                && b.num_targets < MAX_BRAIN_TARGETS
+            {
+                let slot = b.num_targets;
+                b.targets[slot] = Some(idx);
+                b.num_targets += 1;
             }
         }
-    }
+    });
 
     ctx.s_start_sound(None, SfxEnum::sfx_bossit);
 }
@@ -2236,27 +2378,29 @@ pub fn a_brain_die(_actor_idx: usize, ctx: &mut dyn EnemyContext) {
 ///
 /// Translated from `A_BrainSpit` (p_enemy.c:1919-1958).
 pub fn a_brain_spit(actor_idx: usize, ctx: &mut dyn EnemyContext) {
-    let num_targets = unsafe { NUM_BRAIN_TARGETS };
-    if num_targets == 0 {
-        return;
-    }
+    // Access brain state via thread_local to determine target and easy-skip.
+    let target_idx = BRAIN.with(|cell| {
+        let mut b = cell.borrow_mut();
 
-    // Easy-mode toggle: skip every other spit on skill ≤ Easy
-    unsafe {
-        EASY ^= 1;
-        if ctx.gameskill() as i32 <= Skill::Easy as i32 && EASY == 0 {
-            return;
+        if b.num_targets == 0 {
+            return None;
         }
-    }
 
-    // Get next target
-    let target_idx = unsafe {
-        let idx = BRAIN_TARGET_ON;
-        BRAIN_TARGET_ON = (BRAIN_TARGET_ON + 1) % NUM_BRAIN_TARGETS;
-        match BRAIN_TARGETS[idx] {
-            Some(t) => t,
-            None => return,
+        // Easy-mode toggle: skip every other spit on skill ≤ Easy
+        b.easy ^= 1;
+        if ctx.gameskill() as i32 <= Skill::Easy as i32 && b.easy == 0 {
+            return None;
         }
+
+        // Get next target, cycling through the target list
+        let idx = b.target_on;
+        b.target_on = (b.target_on + 1) % b.num_targets;
+        b.targets[idx]
+    });
+
+    let target_idx = match target_idx {
+        Some(t) => t,
+        None => return,
     };
 
     // Spawn the cube

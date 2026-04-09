@@ -800,10 +800,17 @@ pub trait SpecContext {
     fn p_add_thinker_floor(&mut self, floor: FloorMoveT) -> usize;
     fn p_add_thinker_door(&mut self, door: VldoorT) -> usize;
     fn p_add_thinker_ceiling(&mut self, ceiling: CeilingT) -> usize;
+    fn p_add_thinker_plat(&mut self, plat: PlatT) -> usize;
 
     // --- Cross-module: Ceiling stasis management ---
     /// Re-activate all ceiling movers in stasis whose tag matches the given tag.
     fn p_activate_in_stasis_ceiling(&mut self, tag: i32);
+
+    // --- Cross-module: Platform stasis management ---
+    /// Re-activate all platform movers in stasis whose tag matches the given tag.
+    /// Iterates registered platform thinkers, finding those with matching tag
+    /// whose status is `InStasis`, and restores their `oldstatus`.
+    fn p_activate_in_stasis_plat(&mut self, tag: i32);
 
     // --- Cross-module: Door re-use (bump logic) ---
     /// Returns a mutable reference to the door data for a given thinker

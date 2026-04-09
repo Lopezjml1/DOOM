@@ -121,12 +121,11 @@ fn init_logging(cli: &Cli) {
 ///
 /// 1. Validate the IWAD file path (deterministic startup diagnostics)
 /// 2. Construct the SDL2 platform host
-/// 3. Initialize the WAD provider (load IWAD + optional PWADs)
-/// 4. Construct the software renderer
-/// 5. Initialize the audio backend (non-fatal on failure)
-/// 6. Build all game state objects
-/// 7. Call `d_doom_main` for engine initialization
-/// 8. Enter the main game loop (D_DoomLoop equivalent)
+/// 3. Construct the software renderer
+/// 4. Initialize the audio backend (non-fatal on failure)
+/// 5. Build all game state objects
+/// 6. Call `d_doom_main` for engine initialization (loads WAD internally)
+/// 7. Extract loaded WAD and enter the main game loop (D_DoomLoop)
 ///
 /// # Errors
 ///
@@ -181,28 +180,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     info!("SDL2 platform initialized successfully");
 
     // -----------------------------------------------------------------------
-    // Step 3: Initialize WAD provider
-    // Replaces W_InitMultipleFiles called from D_DoomMain.
-    // Loads the IWAD first, then any PWADs in order (later overrides earlier).
-    // -----------------------------------------------------------------------
-    info!("Loading WAD files...");
-    let mut wad_files: Vec<&str> = vec![iwad_path.as_str()];
-    for pwad in &cli.pwad {
-        wad_files.push(pwad.as_str());
-    }
-    let wad = doom_wad::WadFile::init_multiple_files(&wad_files)
-        .map_err(|e| format!("Failed to load WAD files: {}", e))?;
-    info!("WAD files loaded: {} lumps", wad.num_lumps());
-
-    // -----------------------------------------------------------------------
-    // Step 4: Construct software renderer
+    // Step 3: Construct software renderer
+    // (WAD loading is handled by d_doom_main via identify_version →
+    //  d_add_file → W_InitMultipleFiles, matching the original C flow.)
     // -----------------------------------------------------------------------
     info!("Initializing software renderer...");
     let mut renderer = doom_render_soft::SoftwareRenderer::new();
     info!("Software renderer initialized");
 
     // -----------------------------------------------------------------------
-    // Step 5: Initialize audio backend
+    // Step 4: Initialize audio backend
     // Audio initialization failure is non-fatal — the game continues without
     // audio and logs a warning. This matches behavior of systems where no
     // audio device is available.
@@ -224,7 +211,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // -----------------------------------------------------------------------
-    // Step 6: Build all game state objects
+    // Step 5: Build all game state objects
     // Per AAP §0.7.5: "Global state consolidated into structs passed by
     // mutable reference" — main.rs creates all state objects and passes
     // them down the call chain.
@@ -250,15 +237,27 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let mut menu_state = doom_core::ui::menu::MenuState::new();
     let mut hud_state = doom_core::ui::hud::HudState::new();
     let mut statusbar_state = doom_core::ui::statusbar::StatusBarState::new();
+    let mut automap_state = doom_core::ui::automap::AutomapState::new();
+    let mut intermission_state = doom_core::ui::intermission::IntermissionState::new();
+    let mut finale_state = doom_core::ui::finale::FinaleState::default();
+    let mut wipe_state = doom_core::ui::wipe::WipeState::new();
+
+    // Network state (single-player stub — AAP §0.3.2 defers networking)
+    let mut net_state = doom_core::game::game_net::NetState::new();
+
+    // Deterministic PRNG — m_random.c rndtable[256]
+    let mut rng = doom_core::util::random::DoomRandom::default();
 
     // Configuration defaults (m_misc.c default_t table)
     let mut config = doom_core::util::misc::ConfigDefaults::build_defaults();
 
-    // WAD is passed as Option<WadFile> to d_doom_main for initialization
-    let mut wad_option: Option<doom_wad::WadFile> = Some(wad);
+    // WAD is populated by d_doom_main via identify_version → d_add_file →
+    // W_InitMultipleFiles. Passed as Option<WadFile> so d_doom_main can
+    // move ownership into it.
+    let mut wad_option: Option<doom_wad::WadFile> = None;
 
     // -----------------------------------------------------------------------
-    // Step 7: Create a no-op audio backend for the case where audio failed.
+    // Step 6: Create a no-op audio backend for the case where audio failed.
     // d_doom_main requires &mut dyn AudioBackend, so we provide a no-op
     // implementation when audio is unavailable.
     // -----------------------------------------------------------------------
@@ -271,7 +270,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         };
 
     // -----------------------------------------------------------------------
-    // Step 8: Call d_doom_main for engine initialization
+    // Step 7: Call d_doom_main for engine initialization
     // This is the equivalent of the original:
     //   myargc = argc;
     //   myargv = argv;
@@ -300,29 +299,55 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     info!("D_DoomMain: initialization complete — all subsystems ready");
-    info!("All subsystems initialized successfully");
 
     // -----------------------------------------------------------------------
-    // Step 9: Main game loop (D_DoomLoop equivalent)
+    // Step 8: Enter the main game loop (D_DoomLoop equivalent)
     //
-    // In the original C code, D_DoomLoop() was an infinite loop inside
-    // D_DoomMain that never returned. In the Rust port, the loop is driven
-    // here in doom-bin/main.rs, calling per-frame functions from doom-core.
+    // In the original C code, D_DoomLoop() was called at the end of
+    // D_DoomMain and never returned (infinite loop).  In the Rust port the
+    // loop lives in doom_core::game::game_loop::d_doom_loop and has the
+    // same divergent return type (-> !).
     //
-    // The loop structure mirrors d_main.c D_DoomLoop():
-    //   while (1) {
-    //       I_StartFrame();
-    //       TryRunTics();    // advance simulation
-    //       S_UpdateSounds(); // positional audio update
-    //       D_Display();     // render frame
-    //   }
-    //
-    // For now, this is a placeholder that logs success and exits cleanly.
-    // The full game loop will be connected when all subsystems are integrated.
+    // All required state objects were constructed above and are passed by
+    // mutable reference.  The WAD is extracted from the Option populated
+    // by d_doom_main.
     // -----------------------------------------------------------------------
-    info!("DOOM game loop ready — engine initialization completed successfully");
+    let wad = wad_option
+        .as_mut()
+        .expect("WAD should have been loaded by d_doom_main via identify_version");
 
-    Ok(())
+    // Re-create audio_ref since the first borrow ended with d_doom_main.
+    let mut noop_audio2 = NoopAudioBackend;
+    let audio_ref2: &mut dyn doom_core::traits::audio::AudioBackend =
+        if let Some(ref mut ab) = audio_backend {
+            ab
+        } else {
+            &mut noop_audio2
+        };
+
+    info!("Entering D_DoomLoop...");
+
+    // d_doom_loop returns `-> !` — it never returns.
+    doom_core::game::game_loop::d_doom_loop(
+        &mut game,
+        &mut game_ctrl,
+        &mut net_state,
+        &mut platform,
+        audio_ref2,
+        &mut renderer,
+        &mut menu_state,
+        &mut video,
+        &mut hud_state,
+        &mut statusbar_state,
+        &mut automap_state,
+        &mut intermission_state,
+        &mut finale_state,
+        &mut wipe_state,
+        &mut rng,
+        &args,
+        wad,
+    );
+    // d_doom_loop never returns — the line below is unreachable.
 }
 
 // ---------------------------------------------------------------------------

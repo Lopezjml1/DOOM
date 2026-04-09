@@ -77,14 +77,14 @@ pub const BODYQUESIZE: usize = 32;
 /// Original C: `#define DEMOMARKER 0x80` (g_game.c line 1489)
 pub const DEMOMARKER: u8 = 0x80;
 
-/// Movement speed tables — normal and turbo (shift-run) speeds.
+/// Default forward movement speed table — normal and turbo (shift-run).
 /// Index 0 = walk, Index 1 = run.
 /// Original C: `fixed_t forwardmove[2] = {0x19, 0x32};` (g_game.c line 175)
-pub const FORWARD_MOVE: [i32; 2] = [0x19, 0x32];
+pub const FORWARD_MOVE_DEFAULT: [i32; 2] = [0x19, 0x32];
 
-/// Side movement speed tables.
+/// Default side movement speed table.
 /// Original C: `fixed_t sidemove[2] = {0x18, 0x28};` (g_game.c line 176)
-pub const SIDE_MOVE: [i32; 2] = [0x18, 0x28];
+pub const SIDE_MOVE_DEFAULT: [i32; 2] = [0x18, 0x28];
 
 /// Turn speed table: [normal, fast, slow].
 /// Original C: `fixed_t angleturn[3] = {640, 1280, 320};` (g_game.c line 177)
@@ -92,7 +92,7 @@ pub const ANGLE_TURN: [i32; 3] = [640, 1280, 320];
 
 /// Maximum player movement per tic (= forwardmove[1] = 0x32).
 /// Original C: `#define MAXPLMOVE (forwardmove[1])` (g_game.c line 179)
-pub const MAXPLMOVE: i32 = FORWARD_MOVE[1];
+pub const MAXPLMOVE: i32 = FORWARD_MOVE_DEFAULT[1];
 
 /// Par times for DOOM 1 episodes/maps (in seconds).
 /// pars[episode][map] — episode 0 unused.
@@ -238,6 +238,12 @@ pub struct GameCtrl {
     pub ticdup: i32,
     /// Level time accumulated during gameplay (tics).
     pub leveltime: i32,
+    /// Forward movement speeds (mutable for -turbo scaling).
+    /// Initialized from FORWARD_MOVE_DEFAULT.
+    pub forward_move: [i32; 2],
+    /// Side movement speeds (mutable for -turbo scaling).
+    /// Initialized from SIDE_MOVE_DEFAULT.
+    pub side_move: [i32; 2],
 }
 
 impl GameCtrl {
@@ -327,6 +333,8 @@ impl GameCtrl {
             wipegamestate: GameState::DemoScreen,
             ticdup: 1,
             leveltime: 0,
+            forward_move: FORWARD_MOVE_DEFAULT,
+            side_move: SIDE_MOVE_DEFAULT,
         }
     }
 }
@@ -440,7 +448,7 @@ pub fn g_build_ticcmd(ctrl: &mut GameCtrl, cmd: &mut TicCmd) {
             .copied()
             .unwrap_or(false)
         {
-            side += SIDE_MOVE[speed];
+            side += ctrl.side_move[speed];
         }
         if ctrl
             .gamekeydown
@@ -448,7 +456,7 @@ pub fn g_build_ticcmd(ctrl: &mut GameCtrl, cmd: &mut TicCmd) {
             .copied()
             .unwrap_or(false)
         {
-            side -= SIDE_MOVE[speed];
+            side -= ctrl.side_move[speed];
         }
     } else {
         if ctrl
@@ -476,7 +484,7 @@ pub fn g_build_ticcmd(ctrl: &mut GameCtrl, cmd: &mut TicCmd) {
         .copied()
         .unwrap_or(false)
     {
-        forward += FORWARD_MOVE[speed];
+        forward += ctrl.forward_move[speed];
     }
     if ctrl
         .gamekeydown
@@ -484,7 +492,7 @@ pub fn g_build_ticcmd(ctrl: &mut GameCtrl, cmd: &mut TicCmd) {
         .copied()
         .unwrap_or(false)
     {
-        forward -= FORWARD_MOVE[speed];
+        forward -= ctrl.forward_move[speed];
     }
 
     // Strafe left/right
@@ -494,7 +502,7 @@ pub fn g_build_ticcmd(ctrl: &mut GameCtrl, cmd: &mut TicCmd) {
         .copied()
         .unwrap_or(false)
     {
-        side += SIDE_MOVE[speed];
+        side += ctrl.side_move[speed];
     }
     if ctrl
         .gamekeydown
@@ -502,7 +510,7 @@ pub fn g_build_ticcmd(ctrl: &mut GameCtrl, cmd: &mut TicCmd) {
         .copied()
         .unwrap_or(false)
     {
-        side -= SIDE_MOVE[speed];
+        side -= ctrl.side_move[speed];
     }
 
     // Fire, use, weapon change buttons
@@ -546,7 +554,7 @@ pub fn g_build_ticcmd(ctrl: &mut GameCtrl, cmd: &mut TicCmd) {
     // Mouse forward movement
     // Original C: g_game.c lines 351-395
     if button_active(&ctrl.mousebuttons, ctrl.mousebforward) {
-        forward += FORWARD_MOVE[speed];
+        forward += ctrl.forward_move[speed];
     }
 
     // Mouse turning / strafing
@@ -1399,14 +1407,28 @@ pub fn g_do_save_game(ctrl: &mut GameCtrl) {
         save_data.push(if ctrl.playeringame[i] { 1 } else { 0 });
     }
 
-    // The actual archive calls (archive_players, archive_world,
-    // archive_thinkers, archive_specials) are performed by the game loop
-    // which has access to the full game context. The save buffer is
-    // stored here for the game loop to append archived data.
+    // Store the save header in the buffer. The archive functions
+    // (P_ArchivePlayers, P_ArchiveWorld, P_ArchiveThinkers,
+    // P_ArchiveSpecials) are called by the game loop after this function
+    // returns, appending their data to the buffer. The game loop then
+    // calls g_finalize_save_game() to write the completed buffer to disk.
+    // This matches the original C flow in g_game.c lines 1270-1320 where
+    // all archive data is accumulated before the single M_WriteFile call.
     ctrl.savebuffer = save_data;
+}
 
-    // The game loop should call the archive functions, append 0x1d marker,
-    // then write via write_file.
+/// Finalize a save game by appending the terminator marker and writing
+/// the completed save buffer to disk.
+///
+/// This must be called AFTER all archive functions (P_ArchivePlayers,
+/// P_ArchiveWorld, P_ArchiveThinkers, P_ArchiveSpecials) have appended
+/// their data to `ctrl.savebuffer`.
+///
+/// Original C: final portion of `G_DoSaveGame` (g_game.c lines 1305-1320)
+pub fn g_finalize_save_game(ctrl: &mut GameCtrl) {
+    // Append save-game terminator marker (0x1d)
+    // Original C: *save_p++ = 0x1d;
+    ctrl.savebuffer.push(0x1d);
 
     // Build save file path
     let save_path = format!("{}{}.dsg", SAVEGAMENAME, ctrl.savegameslot);
@@ -1420,7 +1442,7 @@ pub fn g_do_save_game(ctrl: &mut GameCtrl) {
         );
     }
 
-    // Write to disk
+    // Write the fully-populated buffer to disk
     if !crate::util::misc::write_file(&save_path, &ctrl.savebuffer) {
         error!("G_DoSaveGame: failed to write '{}'", save_path);
         return;
@@ -1668,8 +1690,11 @@ pub fn g_record_demo(ctrl: &mut GameCtrl, name: &str, args: &crate::util::argv::
 /// Header format: VERSION, skill, episode, map, deathmatch, respawnparm,
 /// fastparm, nomonsters, consoleplayer, playeringame[0..3]
 ///
+/// `fastparm` and `nomonsters` come from `GameMain` which owns the
+/// command-line flags parsed from `-fast` and `-nomonsters` respectively.
+///
 /// Original C: `void G_BeginRecording(void)` (g_game.c lines 1549-1567)
-pub fn g_begin_recording(ctrl: &mut GameCtrl) {
+pub fn g_begin_recording(ctrl: &mut GameCtrl, fastparm: bool, nomonsters: bool) {
     ctrl.demobuffer.clear();
     ctrl.demo_p = 0;
 
@@ -1681,8 +1706,8 @@ pub fn g_begin_recording(ctrl: &mut GameCtrl) {
     ctrl.demobuffer.push(ctrl.deathmatch as u8);
     ctrl.demobuffer
         .push(if ctrl.respawnmonsters { 1 } else { 0 });
-    ctrl.demobuffer.push(0); // fastparm — not tracked in GameCtrl, default false
-    ctrl.demobuffer.push(0); // nomonsters — not tracked in GameCtrl, default false
+    ctrl.demobuffer.push(if fastparm { 1 } else { 0 });
+    ctrl.demobuffer.push(if nomonsters { 1 } else { 0 });
     ctrl.demobuffer.push(ctrl.consoleplayer as u8);
 
     for i in 0..MAXPLAYERS {

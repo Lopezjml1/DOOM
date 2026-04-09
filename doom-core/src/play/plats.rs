@@ -368,16 +368,12 @@ pub fn ev_do_plat(
             }
         }
 
-        // Mark sector as having active special data.
-        // The actual index will be set by the concrete SpecContext when
-        // it registers the thinker, but we mark it with a sentinel to
-        // prevent duplicate activation during the same tag search.
-        // The concrete SpecContext is responsible for:
-        //   1. Adding the thinker to the thinker list (P_AddThinker)
-        //   2. Registering it in active plats (P_AddActivePlat)
-        //   3. Setting sector.specialdata to the thinker index
-        // We pass the fully-configured PlatT back through the context.
-        let _plat_data = plat;
+        // Register the platform thinker with the thinker system and record
+        // it in the active platforms list via the SpecContext trait.
+        // This makes the platform functional — T_PlatRaise will execute
+        // each tic to move the platform.
+        // Original C: P_AddThinker + P_AddActivePlat (p_plats.c lines 257-258)
+        ctx.p_add_thinker_plat(plat);
     }
 
     rtn
@@ -435,15 +431,12 @@ pub fn ev_stop_plat(tag: i32, plats: &mut [PlatT], active: &ActivePlats) {
 ///
 /// * `tag` — the tag value to match against platform tags
 /// * `ctx` — mutable spec context (provides access to platform state)
-pub fn p_activate_in_stasis(tag: i32, _ctx: &mut dyn SpecContext) {
-    // Note: The concrete SpecContext implementation must iterate its
-    // active platforms array and for each platform with matching tag
-    // and status == InStasis:
-    //   plat.status = plat.oldstatus
-    //   plat.thinker.function = ActionFn::PlatRaise
-    //
-    // This function provides the standalone logic operating on raw data:
-    let _ = tag;
+pub fn p_activate_in_stasis(tag: i32, ctx: &mut dyn SpecContext) {
+    // Delegate to the SpecContext trait method which has access to the
+    // active platform thinkers in the thinker list. This matches the
+    // original C logic (p_plats.c:158-175) which iterates the activeplats
+    // array and reactivates any in-stasis platforms with a matching tag.
+    ctx.p_activate_in_stasis_plat(tag);
 }
 
 /// Standalone version of `P_ActivateInStasis` operating on raw platform data

@@ -35,7 +35,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::game::game_ctrl::{
     g_begin_recording, g_defered_play_demo, g_init_new, g_load_game, g_record_demo, g_responder,
-    g_time_demo, GameCtrl, FORWARD_MOVE, SIDE_MOVE,
+    g_time_demo, GameCtrl, FORWARD_MOVE_DEFAULT, SIDE_MOVE_DEFAULT,
 };
 use crate::game::strings::{DEVDATA, DEVMAPS, D_DEVSTR, SAVEGAMENAME};
 use crate::info::sounds::{MusicEnum, S_MUSIC};
@@ -1106,6 +1106,13 @@ pub fn d_doom_main(
     wad_result: &mut Option<WadFile>,
     config: &mut ConfigDefaults,
 ) {
+    // d_main.c:991: IdentifyVersion — detect IWAD and set gamemode.
+    // MUST be called before W_InitMultipleFiles and any gamemode-dependent
+    // logic (title strings, episode selection, shareware restrictions).
+    // This populates game.wadfiles with the IWAD path and sets
+    // game_ctrl.gamemode based on the IWAD filename.
+    identify_version(game, game_ctrl, args);
+
     // d_main.c:811-816: Check for -nomonsters, -respawn, -fast, -devparm
     game.nomonsters = args.has_parm("-nomonsters");
     game.respawnparm = args.has_parm("-respawn");
@@ -1167,20 +1174,17 @@ pub fn d_doom_main(
     }
 
     // d_main.c:885-902: Handle -turbo parameter
+    // Scales forward and side movement speeds. Capped at 400% as in the
+    // original C code. The mutable arrays on GameCtrl are initialised from
+    // FORWARD_MOVE_DEFAULT / SIDE_MOVE_DEFAULT and modified in-place here.
     if let Some(turbo_str) = args.parm_value("-turbo") {
         let scale: i32 = turbo_str.parse().unwrap_or(200).clamp(10, 400);
         info!("turbo scale: {}%%", scale);
 
-        // Adjust forward and side move tables
-        // FORWARD_MOVE and SIDE_MOVE are [i32; 2] constants
-        // In the full implementation, these would be modified in GameCtrl
-        debug!(
-            "Turbo: forward={}/{}, side={}/{}",
-            FORWARD_MOVE[0] * scale / 100,
-            FORWARD_MOVE[1] * scale / 100,
-            SIDE_MOVE[0] * scale / 100,
-            SIDE_MOVE[1] * scale / 100
-        );
+        game_ctrl.forward_move[0] = FORWARD_MOVE_DEFAULT[0] * scale / 100;
+        game_ctrl.forward_move[1] = FORWARD_MOVE_DEFAULT[1] * scale / 100;
+        game_ctrl.side_move[0] = SIDE_MOVE_DEFAULT[0] * scale / 100;
+        game_ctrl.side_move[1] = SIDE_MOVE_DEFAULT[1] * scale / 100;
     }
 
     // d_main.c:910-936: Handle -wart parameter (development WAD)
@@ -1196,9 +1200,14 @@ pub fn d_doom_main(
             d_add_file(game, &wart_file);
         } else {
             // DOOM 1: -wart <episode> <map>
+            // wart_val is argv[wart_idx+1] (episode).  Map is the NEXT arg
+            // (argv[wart_idx+2]).  Original C: myargv[p+1] / myargv[p+2].
             let ep: i32 = wart_val.parse().unwrap_or(1);
-            let map_str = args.parm_value("-wart");
-            let map: i32 = map_str.and_then(|s| s.parse().ok()).unwrap_or(1);
+            let map: i32 = args
+                .check_parm("-wart")
+                .and_then(|idx| args.argv(idx + 2))
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1);
             let wart_file = format!("{}e{}m{}.wad", game.mapdir, ep, map);
             d_add_file(game, &wart_file);
         }
@@ -1407,7 +1416,7 @@ pub fn d_doom_main(
     // In the Rust port, the main loop is driven by the caller (doom-bin/main.rs)
     // who calls d_doom_loop_tick() repeatedly. We initialize the state here.
     if game_ctrl.demorecording {
-        g_begin_recording(game_ctrl);
+        g_begin_recording(game_ctrl, game.fastparm, game.nomonsters);
     }
 
     info!("D_DoomMain: initialization complete.");

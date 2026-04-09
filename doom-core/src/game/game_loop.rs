@@ -276,7 +276,7 @@ pub fn d_doom_loop(
     // Original C: if (demorecording) G_BeginRecording();
     if game_ctrl.demorecording {
         info!("Demo recording active — initializing recording buffer");
-        g_begin_recording(game_ctrl);
+        g_begin_recording(game_ctrl, game.fastparm, game.nomonsters);
     }
 
     // -------------------------------------------------------------------------

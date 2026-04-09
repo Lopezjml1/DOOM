@@ -1,3 +1,16 @@
+// Copyright (C) 1993-1996 by id Software, Inc.
+// Copyright (C) 2024 DOOM Rust Port Contributors
+//
+// This program is free software; you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation; either version 2 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+
 //! Shooting and aiming. Use lines. Radius attacks. Sector height changes.
 //! Translated from linuxdoom-1.10/p_map.c (collision/trace portion, lines 791-1339)
 //!
@@ -8,17 +21,14 @@
 //! - **P_RadiusAttack** — apply splash damage from an explosion
 //! - **P_ChangeSector** — process height changes (crushing) in a sector
 //!
-//! All callbacks that feed into `p_path_traverse` are bare `fn(&Intercept) -> bool`
-//! function pointers (`traverser_t`).  Because they cannot capture context, they
-//! read/write module-level `static mut` state and record **deferred effects**
-//! (puff/blood spawning, damage application, special-line activation) that the
-//! calling public function processes after traversal completes.
-
-// The `static mut` pattern mirrors the original C global variables and is
-// required for compatibility with the bare-function-pointer callback ABI.
-#![allow(static_mut_refs)]
+//! The bare `fn(&Intercept) -> bool` callbacks cannot capture closures, so
+//! shared state is stored in a `thread_local!` `RefCell<MapState>` instead of
+//! `static mut`.  This is safe in the single-threaded DOOM engine and avoids
+//! all `unsafe` access patterns.
 
 use crate::info::mobjinfo::MobjType;
+use std::cell::{Cell, RefCell};
+
 use crate::info::sounds::SfxEnum;
 use crate::info::states::StateNum;
 use crate::play::maputl::{
@@ -97,14 +107,15 @@ enum UseResult {
 }
 
 // =========================================================================
-// Module-level mutable state (mirrors original C globals)
+// Module-level mutable state (thread-local, mirrors original C globals)
 // =========================================================================
 
 /// Consolidated state for the map attack/use/sector-change subsystem.
 ///
-/// Stored as `static mut` because the bare `fn(&Intercept) -> bool` callbacks
-/// (`ptr_aim_traverse`, `ptr_shoot_traverse`, `ptr_use_traverse`) cannot
-/// capture closures — they must access shared state through module-level statics.
+/// Stored in a `thread_local! { RefCell<MapState> }` because the bare
+/// `fn(&Intercept) -> bool` callbacks cannot capture closures.  Using
+/// `thread_local!` with `RefCell` is safe in the single-threaded DOOM
+/// engine and eliminates all `unsafe` access to module-level mutable state.
 struct MapState {
     // --- Attack state ---
     /// Index of the mobj that is shooting.
@@ -151,6 +162,10 @@ struct MapState {
     use_result: UseResult,
 
     // --- Raw data pointers (valid only during traversal) ---
+    // SAFETY: These raw pointers are set by `stash_level_data()` immediately
+    // before a traversal call and are only dereferenced during that traversal.
+    // The data they point to (lines, sectors, mobjs, vertexes) is owned by
+    // the `MapContext` and guaranteed live for the duration of the traversal.
     lines_ptr: *const LineDef,
     lines_len: usize,
     sectors_ptr: *const Sector,
@@ -161,119 +176,130 @@ struct MapState {
     vertexes_len: usize,
 }
 
-// SAFETY: All access to MAP is single-threaded, matching the original C engine.
-unsafe impl Send for MapState {}
-unsafe impl Sync for MapState {}
+impl MapState {
+    const fn new() -> Self {
+        MapState {
+            shootthing: None,
+            shootz: Fixed(0),
+            la_damage: 0,
+            attackrange: Fixed(0),
+            usething: None,
+            trace_x: Fixed(0),
+            trace_y: Fixed(0),
+            trace_dx: Fixed(0),
+            trace_dy: Fixed(0),
+            opentop: Fixed(0),
+            openbottom: Fixed(0),
+            openrange: Fixed(0),
+            lowfloor: Fixed(0),
+            skyflatnum: 0,
+            shoot_specials: [0; MAX_SHOOT_SPECIALS],
+            shoot_special_count: 0,
+            shoot_hit: ShootHit::Nothing,
+            use_result: UseResult::Nothing,
+            lines_ptr: std::ptr::null(),
+            lines_len: 0,
+            sectors_ptr: std::ptr::null(),
+            sectors_len: 0,
+            mobjs_ptr: std::ptr::null(),
+            mobjs_len: 0,
+            vertexes_ptr: std::ptr::null(),
+            vertexes_len: 0,
+        }
+    }
+}
 
-static mut MAP: MapState = MapState {
-    shootthing: None,
-    shootz: Fixed(0),
-    la_damage: 0,
-    attackrange: Fixed(0),
-    usething: None,
-    trace_x: Fixed(0),
-    trace_y: Fixed(0),
-    trace_dx: Fixed(0),
-    trace_dy: Fixed(0),
-    opentop: Fixed(0),
-    openbottom: Fixed(0),
-    openrange: Fixed(0),
-    lowfloor: Fixed(0),
-    skyflatnum: 0,
-    shoot_specials: [0; MAX_SHOOT_SPECIALS],
-    shoot_special_count: 0,
-    shoot_hit: ShootHit::Nothing,
-    use_result: UseResult::Nothing,
-    lines_ptr: std::ptr::null(),
-    lines_len: 0,
-    sectors_ptr: std::ptr::null(),
-    sectors_len: 0,
-    mobjs_ptr: std::ptr::null(),
-    mobjs_len: 0,
-    vertexes_ptr: std::ptr::null(),
-    vertexes_len: 0,
-};
+thread_local! {
+    /// Thread-local map traversal state.  Replaces the former `static mut MAP`.
+    static MAP: RefCell<MapState> = const { RefCell::new(MapState::new()) };
+}
 
 // =========================================================================
-// Exported module-level globals
+// Exported module-level state (thread-local replacements for former statics)
 // =========================================================================
 
-/// The mobj that was targeted by the last `p_aim_line_attack` or hit by
-/// `p_line_attack`.  `None` if nothing was hit.
-/// Original C: `mobj_t* linetarget;` (p_map.c line 66).
-#[allow(non_upper_case_globals)]
-pub static mut linetarget: Option<usize> = None;
+thread_local! {
+    /// The mobj that was targeted by the last `p_aim_line_attack` or hit by
+    /// `p_line_attack`.  `None` if nothing was hit.
+    /// Original C: `mobj_t* linetarget;` (p_map.c line 66).
+    static LINETARGET: Cell<Option<usize>> = const { Cell::new(None) };
 
-/// The vertical slope determined by `p_aim_line_attack` (auto-aim result).
-/// Original C: `fixed_t aimslope;` (p_map.c line 800).
-#[allow(non_upper_case_globals)]
-pub static mut aimslope: Fixed = Fixed(0);
+    /// The vertical slope determined by `p_aim_line_attack` (auto-aim result).
+    /// Original C: `fixed_t aimslope;` (p_map.c line 800).
+    static AIMSLOPE: Cell<Fixed> = const { Cell::new(Fixed(0)) };
+}
 
 // =========================================================================
 // Raw-pointer accessor helpers (valid only within a traversal scope)
 // =========================================================================
+//
+// The bare-function-pointer callback ABI means traversal callbacks cannot
+// borrow the context directly. During traversal, `stash_level_data`
+// copies raw pointers into the thread-local `MAP`.  The following helpers
+// reconstruct borrowed slices from those pointers.
+//
+// SAFETY CONTRACT: every call site must guarantee that the `MapContext`
+// whose data was stashed outlives the traversal (ensured by the scoped
+// pattern in each public function).
 
-/// Access the line array via raw pointer stored in MAP.
+/// Reconstruct the line slice from the stashed pointer in `MAP`.
 ///
 /// # Safety
-/// Must only be called while MAP.lines_ptr/lines_len are valid.
+/// `MAP.lines_ptr` / `lines_len` must have been set by `stash_level_data`
+/// and the originating slice must still be live.
 #[inline]
-unsafe fn map_lines() -> &'static [LineDef] {
-    std::slice::from_raw_parts(MAP.lines_ptr, MAP.lines_len)
+fn map_lines_from(m: &MapState) -> &[LineDef] {
+    // SAFETY: see stash_level_data contract.
+    unsafe { std::slice::from_raw_parts(m.lines_ptr, m.lines_len) }
 }
 
-/// Access the sector array via raw pointer stored in MAP.
+/// Reconstruct the sector slice from the stashed pointer in `MAP`.
 #[inline]
-unsafe fn map_sectors() -> &'static [Sector] {
-    std::slice::from_raw_parts(MAP.sectors_ptr, MAP.sectors_len)
+fn map_sectors_from(m: &MapState) -> &[Sector] {
+    unsafe { std::slice::from_raw_parts(m.sectors_ptr, m.sectors_len) }
 }
 
-/// Access the mobj array via raw pointer stored in MAP.
+/// Reconstruct the mobj slice from the stashed pointer in `MAP`.
 #[inline]
-unsafe fn map_mobjs() -> &'static [MapObject] {
-    std::slice::from_raw_parts(MAP.mobjs_ptr, MAP.mobjs_len)
+fn map_mobjs_from(m: &MapState) -> &[MapObject] {
+    unsafe { std::slice::from_raw_parts(m.mobjs_ptr, m.mobjs_len) }
 }
 
-/// Access the vertex array via raw pointer stored in MAP.
+/// Reconstruct the vertex slice from the stashed pointer in `MAP`.
 #[inline]
-unsafe fn map_vertexes() -> &'static [Vertex] {
-    std::slice::from_raw_parts(MAP.vertexes_ptr, MAP.vertexes_len)
+fn map_vertexes_from(m: &MapState) -> &[Vertex] {
+    unsafe { std::slice::from_raw_parts(m.vertexes_ptr, m.vertexes_len) }
 }
 
-/// Compute line opening using a temporary `MapUtilState` and store results
-/// in `MAP.opentop`, `MAP.openbottom`, `MAP.openrange`, `MAP.lowfloor`.
-///
-/// # Safety
-/// MAP.lines_ptr, MAP.sectors_ptr must be valid.
-unsafe fn do_line_opening(line_idx: usize) {
-    let li = &map_lines()[line_idx];
-    let secs = map_sectors();
+/// Compute line opening and store results in `MAP`.
+fn do_line_opening(m: &mut MapState, line_idx: usize) {
+    let li = &map_lines_from(m)[line_idx];
+    let secs = map_sectors_from(m);
     let mut temp = MapUtilState::new();
     p_line_opening(&mut temp, li, secs);
-    MAP.opentop = temp.opentop;
-    MAP.openbottom = temp.openbottom;
-    MAP.openrange = temp.openrange;
-    MAP.lowfloor = temp.lowfloor;
+    m.opentop = temp.opentop;
+    m.openbottom = temp.openbottom;
+    m.openrange = temp.openrange;
+    m.lowfloor = temp.lowfloor;
 }
 
-/// Store raw pointers to level data in MAP for callback access.
+/// Store raw pointers to level data in `MAP` for callback access.
 ///
-/// # Safety
-/// The caller must ensure the slices outlive the traversal.
-unsafe fn stash_level_data(ctx: &dyn MapContext) {
+/// The caller must ensure the context outlives the traversal that follows.
+fn stash_level_data(m: &mut MapState, ctx: &dyn MapContext) {
     let lines = ctx.lines();
-    MAP.lines_ptr = lines.as_ptr();
-    MAP.lines_len = lines.len();
+    m.lines_ptr = lines.as_ptr();
+    m.lines_len = lines.len();
     let sectors = ctx.sectors();
-    MAP.sectors_ptr = sectors.as_ptr();
-    MAP.sectors_len = sectors.len();
+    m.sectors_ptr = sectors.as_ptr();
+    m.sectors_len = sectors.len();
     let mobjs = ctx.mobjs();
-    MAP.mobjs_ptr = mobjs.as_ptr();
-    MAP.mobjs_len = mobjs.len();
+    m.mobjs_ptr = mobjs.as_ptr();
+    m.mobjs_len = mobjs.len();
     let verts = ctx.vertexes();
-    MAP.vertexes_ptr = verts.as_ptr();
-    MAP.vertexes_len = verts.len();
-    MAP.skyflatnum = ctx.sky_flatnum();
+    m.vertexes_ptr = verts.as_ptr();
+    m.vertexes_len = verts.len();
+    m.skyflatnum = ctx.sky_flatnum();
 }
 
 // =========================================================================
@@ -286,8 +312,8 @@ unsafe fn stash_level_data(ctx: &dyn MapContext) {
 /// Modeled after `MovementContext`, `MobjContext`, etc. — each public
 /// function borrows `&mut dyn MapContext` for the duration of its call.
 /// Bare `fn(&Intercept) -> bool` callbacks (used by `p_path_traverse`)
-/// cannot access the context directly — they read/write the module-level
-/// `static mut MAP` instead and record deferred effects that the calling
+/// cannot access the context directly — they read/write the thread-local
+/// `MAP` instead and record deferred effects that the calling
 /// function processes after traversal completes.
 pub trait MapContext {
     // --- Level geometry ---
@@ -396,67 +422,80 @@ pub trait MapContext {
 ///
 /// Returns `true` to continue traversal, `false` to stop.
 fn ptr_aim_traverse(intercept: &Intercept) -> bool {
-    // SAFETY: Called only during P_AimLineAttack while MAP state is valid.
-    unsafe {
+    MAP.with(|cell| {
+        let mut m = cell.borrow_mut();
         match intercept.d {
             InterceptData::Line(line_idx) => {
-                let lines = map_lines();
-                let li = &lines[line_idx];
+                // Extract line data into locals to avoid borrow conflicts.
+                let (flags, frontsector, backsector) = {
+                    let lines = map_lines_from(&m);
+                    let li = &lines[line_idx];
+                    (li.flags, li.frontsector, li.backsector)
+                };
 
                 // Not two-sided → blocks aim
-                if (li.flags & ML_TWOSIDED) == 0 {
+                if (flags & ML_TWOSIDED) == 0 {
                     return false;
                 }
 
                 // Compute opening through the line
-                do_line_opening(line_idx);
+                do_line_opening(&mut m, line_idx);
 
                 // Closed opening → blocks aim
-                if MAP.openrange.0 <= 0 {
+                if m.openrange.0 <= 0 {
                     return false;
                 }
 
                 // Compute distance along the trace
-                let dist = MAP.attackrange.fixed_mul(intercept.frac);
+                let dist = m.attackrange.fixed_mul(intercept.frac);
                 if dist.0 == 0 {
                     return true; // degenerate — skip
                 }
 
-                let sectors = map_sectors();
+                let sectors = map_sectors_from(&m);
 
                 // Narrow the slope window based on floor/ceiling differences
-                if let (Some(front_idx), Some(back_idx)) = (li.frontsector, li.backsector) {
+                if let (Some(front_idx), Some(back_idx)) = (frontsector, backsector) {
                     let front = &sectors[front_idx];
                     let back = &sectors[back_idx];
 
                     if front.floorheight != back.floorheight {
-                        let slope = (MAP.openbottom - MAP.shootz).fixed_div(dist);
-                        if slope.0 > sight::bottomslope.0 {
-                            sight::bottomslope = slope;
+                        let slope = (m.openbottom - m.shootz).fixed_div(dist);
+                        // SAFETY: sight::bottomslope is a pub static mut in
+                        // sight.rs — single-threaded access only.
+                        unsafe {
+                            if slope.0 > sight::bottomslope.0 {
+                                sight::bottomslope = slope;
+                            }
                         }
                     }
 
                     if front.ceilingheight != back.ceilingheight {
-                        let slope = (MAP.opentop - MAP.shootz).fixed_div(dist);
-                        if slope.0 < sight::topslope.0 {
-                            sight::topslope = slope;
+                        let slope = (m.opentop - m.shootz).fixed_div(dist);
+                        // SAFETY: same single-threaded guarantee.
+                        unsafe {
+                            if slope.0 < sight::topslope.0 {
+                                sight::topslope = slope;
+                            }
                         }
                     }
                 }
 
                 // If the slope window has closed, nothing more can be aimed at
-                if sight::topslope.0 <= sight::bottomslope.0 {
+                // SAFETY: sight statics — single-threaded access.
+                let closed = unsafe { sight::topslope.0 <= sight::bottomslope.0 };
+                if closed {
                     return false;
                 }
 
                 true // continue traversal
             }
             InterceptData::Thing(thing_idx) => {
-                let mobjs = map_mobjs();
+                let mobjs = map_mobjs_from(&m);
                 let th = &mobjs[thing_idx];
 
                 // Don't aim at self
-                if MAP.shootthing == Some(thing_idx) {
+                if m.shootthing == Some(thing_idx) {
                     return true;
                 }
 
@@ -466,43 +505,46 @@ fn ptr_aim_traverse(intercept: &Intercept) -> bool {
                 }
 
                 // Compute distance
-                let dist = MAP.attackrange.fixed_mul(intercept.frac);
+                let dist = m.attackrange.fixed_mul(intercept.frac);
                 if dist.0 == 0 {
                     return true;
                 }
 
                 // Slopes to the top and bottom of the thing
-                let thingtopslope = Fixed(th.z.0 + th.height.0 - MAP.shootz.0).fixed_div(dist);
-                let thingbottomslope = Fixed(th.z.0 - MAP.shootz.0).fixed_div(dist);
+                let thingtopslope = Fixed(th.z.0 + th.height.0 - m.shootz.0).fixed_div(dist);
+                let thingbottomslope = Fixed(th.z.0 - m.shootz.0).fixed_div(dist);
 
                 // Check if thing is outside the slope window
-                if thingtopslope.0 < sight::bottomslope.0 {
+                // SAFETY: sight statics — single-threaded access.
+                let (sight_bottom, sight_top) = unsafe { (sight::bottomslope, sight::topslope) };
+
+                if thingtopslope.0 < sight_bottom.0 {
                     return true; // shot over the thing
                 }
-                if thingbottomslope.0 > sight::topslope.0 {
+                if thingbottomslope.0 > sight_top.0 {
                     return true; // shot under the thing
                 }
 
                 // Clamp to the slope window
-                let top = if thingtopslope.0 > sight::topslope.0 {
-                    sight::topslope
+                let top = if thingtopslope.0 > sight_top.0 {
+                    sight_top
                 } else {
                     thingtopslope
                 };
-                let bottom = if thingbottomslope.0 < sight::bottomslope.0 {
-                    sight::bottomslope
+                let bottom = if thingbottomslope.0 < sight_bottom.0 {
+                    sight_bottom
                 } else {
                     thingbottomslope
                 };
 
                 // Set aim slope as the midpoint of the clamped range
-                aimslope = Fixed((top.0 + bottom.0) / 2);
-                linetarget = Some(thing_idx);
+                AIMSLOPE.set(Fixed((top.0 + bottom.0) / 2));
+                LINETARGET.set(Some(thing_idx));
 
                 false // stop — found a target
             }
         }
-    }
+    })
 }
 
 // =========================================================================
@@ -513,59 +555,66 @@ fn ptr_aim_traverse(intercept: &Intercept) -> bool {
 ///
 /// Returns `true` to continue traversal, `false` to stop.
 fn ptr_shoot_traverse(intercept: &Intercept) -> bool {
-    // SAFETY: Called only during P_LineAttack while MAP state is valid.
-    unsafe {
+    MAP.with(|cell| {
+        let mut m = cell.borrow_mut();
         match intercept.d {
-            InterceptData::Line(line_idx) => ptr_shoot_traverse_line(line_idx, intercept.frac),
-            InterceptData::Thing(thing_idx) => ptr_shoot_traverse_thing(thing_idx, intercept.frac),
+            InterceptData::Line(line_idx) => {
+                ptr_shoot_traverse_line(&mut m, line_idx, intercept.frac)
+            }
+            InterceptData::Thing(thing_idx) => {
+                ptr_shoot_traverse_thing(&mut m, thing_idx, intercept.frac)
+            }
         }
-    }
+    })
 }
 
 /// Handle a line intercept during shoot traverse.
-///
-/// # Safety
-/// MAP state and level data pointers must be valid.
-unsafe fn ptr_shoot_traverse_line(line_idx: usize, frac: Fixed) -> bool {
-    let lines = map_lines();
-    let li = &lines[line_idx];
+fn ptr_shoot_traverse_line(m: &mut MapState, line_idx: usize, frac: Fixed) -> bool {
+    // Extract line data into locals to avoid borrow conflicts.
+    let (special, flags, frontsector, backsector) = {
+        let lines = map_lines_from(m);
+        let li = &lines[line_idx];
+        (li.special, li.flags, li.frontsector, li.backsector)
+    };
 
     // Record special lines for post-traverse activation
-    if li.special != 0 && MAP.shoot_special_count < MAX_SHOOT_SPECIALS {
-        MAP.shoot_specials[MAP.shoot_special_count] = line_idx;
-        MAP.shoot_special_count += 1;
+    if special != 0 && m.shoot_special_count < MAX_SHOOT_SPECIALS {
+        m.shoot_specials[m.shoot_special_count] = line_idx;
+        m.shoot_special_count += 1;
     }
 
     // One-sided line — always blocks
-    if (li.flags & ML_TWOSIDED) == 0 {
-        return shoot_hit_line(line_idx, frac);
+    if (flags & ML_TWOSIDED) == 0 {
+        return shoot_hit_line(m, line_idx, frac);
     }
 
     // Compute opening
-    do_line_opening(line_idx);
+    do_line_opening(m, line_idx);
 
     // Compute the distance to the intercept
-    let dist = MAP.attackrange.fixed_mul(frac);
+    let dist = m.attackrange.fixed_mul(frac);
+
+    let cur_aimslope = AIMSLOPE.get();
 
     // Check floor and ceiling slopes
-    if let (Some(front_idx), Some(back_idx)) = (li.frontsector, li.backsector) {
-        let sectors = map_sectors();
+    if let (Some(front_idx), Some(back_idx)) = (frontsector, backsector) {
+        let sectors = map_sectors_from(m);
         let front = &sectors[front_idx];
         let back = &sectors[back_idx];
 
         // Floor check — if higher floor blocks the shot
         if front.floorheight != back.floorheight {
-            let slope = (MAP.openbottom - MAP.shootz).fixed_div(dist);
-            if slope.0 > aimslope.0 {
-                return shoot_hit_line(line_idx, frac);
+            let slope = (m.openbottom - m.shootz).fixed_div(dist);
+            if slope.0 > cur_aimslope.0 {
+                return shoot_hit_line(m, line_idx, frac);
             }
         }
 
         // Ceiling check — if lower ceiling blocks the shot
         if front.ceilingheight != back.ceilingheight {
-            let slope = (MAP.opentop - MAP.shootz).fixed_div(dist);
-            if slope.0 < aimslope.0 {
-                return shoot_hit_line(line_idx, frac);
+            let slope = (m.opentop - m.shootz).fixed_div(dist);
+            if slope.0 < cur_aimslope.0 {
+                return shoot_hit_line(m, line_idx, frac);
             }
         }
     }
@@ -574,39 +623,38 @@ unsafe fn ptr_shoot_traverse_line(line_idx: usize, frac: Fixed) -> bool {
     true
 }
 
-/// Compute the wall-hit position and record it in `MAP.shoot_hit`.
+/// Compute the wall-hit position and record it in `m.shoot_hit`.
 ///
 /// Corresponds to the `hitline:` label in the original C code (p_map.c ~978).
 /// Includes sky hack check.
-///
-/// # Safety
-/// MAP state and level data pointers must be valid.
-unsafe fn shoot_hit_line(line_idx: usize, frac: Fixed) -> bool {
+fn shoot_hit_line(m: &mut MapState, line_idx: usize, frac: Fixed) -> bool {
     // Back up slightly to position the puff in front of the wall
-    let frac = Fixed(frac.0 - Fixed(4 * FRACUNIT).fixed_div(MAP.attackrange).0);
+    let frac = Fixed(frac.0 - Fixed(4 * FRACUNIT).fixed_div(m.attackrange).0);
+
+    let cur_aimslope = AIMSLOPE.get();
 
     // Compute hit position
-    let x = Fixed(MAP.trace_x.0 + MAP.trace_dx.fixed_mul(frac).0);
-    let y = Fixed(MAP.trace_y.0 + MAP.trace_dy.fixed_mul(frac).0);
-    let z = Fixed(MAP.shootz.0 + aimslope.fixed_mul(MAP.attackrange.fixed_mul(frac)).0);
+    let x = Fixed(m.trace_x.0 + m.trace_dx.fixed_mul(frac).0);
+    let y = Fixed(m.trace_y.0 + m.trace_dy.fixed_mul(frac).0);
+    let z = Fixed(m.shootz.0 + cur_aimslope.fixed_mul(m.attackrange.fixed_mul(frac)).0);
 
     // --- Sky hack check ---
-    let lines = map_lines();
+    let lines = map_lines_from(m);
     let li = &lines[line_idx];
 
     if let Some(front_idx) = li.frontsector {
-        let sectors = map_sectors();
+        let sectors = map_sectors_from(m);
         let front = &sectors[front_idx];
-        if front.ceilingpic == MAP.skyflatnum {
+        if front.ceilingpic == m.skyflatnum {
             // Don't shoot the sky!
             if z.0 > front.ceilingheight.0 {
-                MAP.shoot_hit = ShootHit::Sky;
+                m.shoot_hit = ShootHit::Sky;
                 return false;
             }
             // Sky hack wall: back sector also sky ceiling → absorb silently
             if let Some(back_idx) = li.backsector {
-                if sectors[back_idx].ceilingpic == MAP.skyflatnum {
-                    MAP.shoot_hit = ShootHit::Sky;
+                if sectors[back_idx].ceilingpic == m.skyflatnum {
+                    m.shoot_hit = ShootHit::Sky;
                     return false;
                 }
             }
@@ -614,20 +662,17 @@ unsafe fn shoot_hit_line(line_idx: usize, frac: Fixed) -> bool {
     }
 
     // Spawn bullet puff at impact point
-    MAP.shoot_hit = ShootHit::Wall { x, y, z };
+    m.shoot_hit = ShootHit::Wall { x, y, z };
     false
 }
 
 /// Handle a thing intercept during shoot traverse.
-///
-/// # Safety
-/// MAP state and level data pointers must be valid.
-unsafe fn ptr_shoot_traverse_thing(thing_idx: usize, frac: Fixed) -> bool {
-    let mobjs = map_mobjs();
+fn ptr_shoot_traverse_thing(m: &mut MapState, thing_idx: usize, frac: Fixed) -> bool {
+    let mobjs = map_mobjs_from(m);
     let th = &mobjs[thing_idx];
 
     // Don't shoot self
-    if MAP.shootthing == Some(thing_idx) {
+    if m.shootthing == Some(thing_idx) {
         return true;
     }
 
@@ -637,32 +682,34 @@ unsafe fn ptr_shoot_traverse_thing(thing_idx: usize, frac: Fixed) -> bool {
     }
 
     // Compute distance
-    let dist = MAP.attackrange.fixed_mul(frac);
+    let dist = m.attackrange.fixed_mul(frac);
     if dist.0 == 0 {
         return true;
     }
 
+    let cur_aimslope = AIMSLOPE.get();
+
     // Check if the shot goes over or under the thing
-    let thingtopslope = Fixed(th.z.0 + th.height.0 - MAP.shootz.0).fixed_div(dist);
-    if thingtopslope.0 < aimslope.0 {
+    let thingtopslope = Fixed(th.z.0 + th.height.0 - m.shootz.0).fixed_div(dist);
+    if thingtopslope.0 < cur_aimslope.0 {
         return true; // shot over
     }
 
-    let thingbottomslope = Fixed(th.z.0 - MAP.shootz.0).fixed_div(dist);
-    if thingbottomslope.0 > aimslope.0 {
+    let thingbottomslope = Fixed(th.z.0 - m.shootz.0).fixed_div(dist);
+    if thingbottomslope.0 > cur_aimslope.0 {
         return true; // shot under
     }
 
     // Hit! Back up the fraction for the impact position
-    let frac = Fixed(frac.0 - Fixed(10 * FRACUNIT).fixed_div(MAP.attackrange).0);
+    let frac = Fixed(frac.0 - Fixed(10 * FRACUNIT).fixed_div(m.attackrange).0);
 
-    let x = Fixed(MAP.trace_x.0 + MAP.trace_dx.fixed_mul(frac).0);
-    let y = Fixed(MAP.trace_y.0 + MAP.trace_dy.fixed_mul(frac).0);
-    let z = Fixed(MAP.shootz.0 + aimslope.fixed_mul(MAP.attackrange.fixed_mul(frac)).0);
+    let x = Fixed(m.trace_x.0 + m.trace_dx.fixed_mul(frac).0);
+    let y = Fixed(m.trace_y.0 + m.trace_dy.fixed_mul(frac).0);
+    let z = Fixed(m.shootz.0 + cur_aimslope.fixed_mul(m.attackrange.fixed_mul(frac)).0);
 
     let no_blood = th.flags.contains(MobjFlags::MF_NOBLOOD);
 
-    MAP.shoot_hit = ShootHit::Thing {
+    m.shoot_hit = ShootHit::Thing {
         target_idx: thing_idx,
         x,
         y,
@@ -681,20 +728,20 @@ unsafe fn ptr_shoot_traverse_thing(thing_idx: usize, frac: Fixed) -> bool {
 ///
 /// Returns `true` to continue traversal, `false` to stop.
 fn ptr_use_traverse(intercept: &Intercept) -> bool {
-    // SAFETY: Called only during P_UseLines while MAP state is valid.
-    unsafe {
+    MAP.with(|cell| {
+        let mut m = cell.borrow_mut();
         match intercept.d {
             InterceptData::Line(line_idx) => {
-                let lines = map_lines();
+                let lines = map_lines_from(&m);
                 let li = &lines[line_idx];
 
                 if li.special == 0 {
                     // No special — check if the line blocks
-                    do_line_opening(line_idx);
-                    if MAP.openrange.0 <= 0 {
+                    do_line_opening(&mut m, line_idx);
+                    if m.openrange.0 <= 0 {
                         // Closed opening — play "oof" sound
-                        if let Some(thing_idx) = MAP.usething {
-                            MAP.use_result = UseResult::NoWay {
+                        if let Some(thing_idx) = m.usething {
+                            m.use_result = UseResult::NoWay {
                                 mobj_idx: thing_idx,
                             };
                         }
@@ -704,12 +751,12 @@ fn ptr_use_traverse(intercept: &Intercept) -> bool {
                     true
                 } else {
                     // Has special — determine side and record activation
-                    let verts = map_vertexes();
-                    if let Some(thing_idx) = MAP.usething {
-                        let mobjs = map_mobjs();
+                    let verts = map_vertexes_from(&m);
+                    if let Some(thing_idx) = m.usething {
+                        let mobjs = map_mobjs_from(&m);
                         let th = &mobjs[thing_idx];
                         let side = p_point_on_line_side(th.x, th.y, li, verts) as i32;
-                        MAP.use_result = UseResult::UseSpecial { line_idx, side };
+                        m.use_result = UseResult::UseSpecial { line_idx, side };
                     }
                     // Can't use more than one special line in a row
                     false
@@ -718,7 +765,7 @@ fn ptr_use_traverse(intercept: &Intercept) -> bool {
             // Things are not checked during use traversal
             InterceptData::Thing(_) => true,
         }
-    }
+    })
 }
 
 // =========================================================================
@@ -737,57 +784,59 @@ pub fn p_aim_line_attack(
     distance: Fixed,
     ctx: &mut dyn MapContext,
 ) -> Fixed {
-    let (x1, y1, x2, y2);
-
-    // Set up module-level attack state
-    unsafe {
-        MAP.shootthing = Some(source_idx);
-        MAP.attackrange = distance;
-        MAP.la_damage = 0;
-        MAP.shoot_hit = ShootHit::Nothing;
-        MAP.shoot_special_count = 0;
-
-        linetarget = None;
-        aimslope = Fixed(0);
+    // --- Phase 1: set up thread-local MAP state ---
+    let (x1, y1, x2, y2) = MAP.with(|cell| {
+        let mut m = cell.borrow_mut();
+        m.shootthing = Some(source_idx);
+        m.attackrange = distance;
+        m.la_damage = 0;
+        m.shoot_hit = ShootHit::Nothing;
+        m.shoot_special_count = 0;
 
         // Compute shot origin height: z + height/2 + 8*FRACUNIT
         let mobjs = ctx.mobjs();
         let source = &mobjs[source_idx];
-        MAP.shootz = Fixed(source.z.0 + (source.height.0 >> 1) + 8 * FRACUNIT);
+        m.shootz = Fixed(source.z.0 + (source.height.0 >> 1) + 8 * FRACUNIT);
 
         // Compute trace endpoint from angle and distance
         let fine = angle.to_fine_angle();
         let dist_int = distance.0 >> FRACBITS;
-        x1 = source.x;
-        y1 = source.y;
-        x2 = Fixed(x1.0 + dist_int * finecosine(fine).0);
-        y2 = Fixed(y1.0 + dist_int * FINESINE[fine].0);
+        let x1 = source.x;
+        let y1 = source.y;
+        let x2 = Fixed(x1.0 + dist_int * finecosine(fine).0);
+        let y2 = Fixed(y1.0 + dist_int * FINESINE[fine].0);
 
         // Store trace data for callback access
-        MAP.trace_x = x1;
-        MAP.trace_y = y1;
-        MAP.trace_dx = Fixed(x2.0 - x1.0);
-        MAP.trace_dy = Fixed(y2.0 - y1.0);
-
-        // Initialize auto-aim slope window:
-        // ±100*FRACUNIT/160 ≈ ±0.625 (about ±32° vertical)
-        sight::topslope = Fixed(100 * FRACUNIT / 160);
-        sight::bottomslope = Fixed(-(100 * FRACUNIT / 160));
+        m.trace_x = x1;
+        m.trace_y = y1;
+        m.trace_dx = Fixed(x2.0 - x1.0);
+        m.trace_dy = Fixed(y2.0 - y1.0);
 
         // Stash level data pointers for callback access
-        stash_level_data(ctx);
+        stash_level_data(&mut m, ctx);
+        (x1, y1, x2, y2)
+    });
+
+    // Reset aim results
+    LINETARGET.set(None);
+    AIMSLOPE.set(Fixed(0));
+
+    // Initialize auto-aim slope window: ±100*FRACUNIT/160 ≈ ±0.625 (~32°)
+    // SAFETY: sight::topslope/bottomslope are pub static mut in sight.rs —
+    // single-threaded access only.
+    unsafe {
+        sight::topslope = Fixed(100 * FRACUNIT / 160);
+        sight::bottomslope = Fixed(-(100 * FRACUNIT / 160));
     }
 
-    // Execute the path traverse via trait method (avoids borrow conflicts)
+    // --- Phase 2: execute the path traverse (callback borrows MAP) ---
     ctx.do_path_traverse(x1, y1, x2, y2, PT_ADDLINES | PT_ADDTHINGS, ptr_aim_traverse);
 
-    // Return the determined aim slope
-    unsafe {
-        if linetarget.is_some() {
-            aimslope
-        } else {
-            Fixed(0)
-        }
+    // --- Phase 3: return the determined aim slope ---
+    if LINETARGET.get().is_some() {
+        AIMSLOPE.get()
+    } else {
+        Fixed(0)
     }
 }
 
@@ -811,42 +860,43 @@ pub fn p_line_attack(
     damage: i32,
     ctx: &mut dyn MapContext,
 ) {
-    let (x1, y1, x2, y2);
+    // Reset aim/target state
+    AIMSLOPE.set(slope);
+    LINETARGET.set(None);
 
-    // Set up module-level attack state
-    unsafe {
-        MAP.shootthing = Some(source_idx);
-        MAP.la_damage = damage;
-        MAP.attackrange = distance;
-        MAP.shoot_hit = ShootHit::Nothing;
-        MAP.shoot_special_count = 0;
-
-        aimslope = slope;
-        linetarget = None;
+    // --- Phase 1: set up thread-local MAP state ---
+    let (x1, y1, x2, y2) = MAP.with(|cell| {
+        let mut m = cell.borrow_mut();
+        m.shootthing = Some(source_idx);
+        m.la_damage = damage;
+        m.attackrange = distance;
+        m.shoot_hit = ShootHit::Nothing;
+        m.shoot_special_count = 0;
 
         // Compute shot origin height
         let mobjs = ctx.mobjs();
         let source = &mobjs[source_idx];
-        MAP.shootz = Fixed(source.z.0 + (source.height.0 >> 1) + 8 * FRACUNIT);
+        m.shootz = Fixed(source.z.0 + (source.height.0 >> 1) + 8 * FRACUNIT);
 
         // Compute trace endpoint
         let fine = angle.to_fine_angle();
         let dist_int = distance.0 >> FRACBITS;
-        x1 = source.x;
-        y1 = source.y;
-        x2 = Fixed(x1.0 + dist_int * finecosine(fine).0);
-        y2 = Fixed(y1.0 + dist_int * FINESINE[fine].0);
+        let x1 = source.x;
+        let y1 = source.y;
+        let x2 = Fixed(x1.0 + dist_int * finecosine(fine).0);
+        let y2 = Fixed(y1.0 + dist_int * FINESINE[fine].0);
 
-        MAP.trace_x = x1;
-        MAP.trace_y = y1;
-        MAP.trace_dx = Fixed(x2.0 - x1.0);
-        MAP.trace_dy = Fixed(y2.0 - y1.0);
+        m.trace_x = x1;
+        m.trace_y = y1;
+        m.trace_dx = Fixed(x2.0 - x1.0);
+        m.trace_dy = Fixed(y2.0 - y1.0);
 
         // Stash level data pointers
-        stash_level_data(ctx);
-    }
+        stash_level_data(&mut m, ctx);
+        (x1, y1, x2, y2)
+    });
 
-    // Execute the path traverse
+    // --- Phase 2: execute the path traverse (callback borrows MAP) ---
     ctx.do_path_traverse(
         x1,
         y1,
@@ -856,17 +906,16 @@ pub fn p_line_attack(
         ptr_shoot_traverse,
     );
 
-    // --- Post-traverse dispatch ---
+    // --- Phase 3: post-traverse dispatch ---
 
     // 1. Activate special lines that were shot
-    let special_count;
-    let mut specials = [0usize; MAX_SHOOT_SPECIALS];
-    let shootthing;
-    unsafe {
-        special_count = MAP.shoot_special_count;
-        specials[..special_count].copy_from_slice(&MAP.shoot_specials[..special_count]);
-        shootthing = MAP.shootthing;
-    }
+    let (special_count, specials, shootthing) = MAP.with(|cell| {
+        let m = cell.borrow();
+        let count = m.shoot_special_count;
+        let mut specs = [0usize; MAX_SHOOT_SPECIALS];
+        specs[..count].copy_from_slice(&m.shoot_specials[..count]);
+        (count, specs, m.shootthing)
+    });
     if let Some(st) = shootthing {
         for spec in specials.iter().take(special_count) {
             ctx.p_shoot_special_line(st, *spec);
@@ -874,14 +923,10 @@ pub fn p_line_attack(
     }
 
     // 2. Handle the hit result
-    let hit;
-    let la_damage;
-    let at_melee_range;
-    unsafe {
-        hit = MAP.shoot_hit;
-        la_damage = MAP.la_damage;
-        at_melee_range = MAP.attackrange.0 == MELEERANGE;
-    }
+    let (hit, la_damage, at_melee_range) = MAP.with(|cell| {
+        let m = cell.borrow();
+        (m.shoot_hit, m.la_damage, m.attackrange.0 == MELEERANGE)
+    });
 
     match hit {
         ShootHit::Nothing | ShootHit::Sky => {
@@ -903,9 +948,7 @@ pub fn p_line_attack(
                 ctx.p_spawn_blood(x, y, z, la_damage);
             }
             if la_damage != 0 {
-                unsafe {
-                    linetarget = Some(target_idx);
-                }
+                LINETARGET.set(Some(target_idx));
                 ctx.p_damage_mobj(target_idx, shootthing, shootthing, la_damage);
             }
         }
@@ -923,18 +966,17 @@ pub fn p_line_attack(
 ///
 /// Original C: `void P_UseLines(player_t* player)`
 pub fn p_use_lines(player_idx: usize, ctx: &mut dyn MapContext) {
-    let (x1, y1, x2, y2);
-
-    // Set up use-line state
-    unsafe {
+    // --- Phase 1: set up thread-local MAP state ---
+    let setup = MAP.with(|cell| {
+        let mut m = cell.borrow_mut();
         let players = ctx.players();
         let player = &players[player_idx];
         let mo_idx = match player.mobj {
             Some(idx) => idx,
-            None => return,
+            None => return None,
         };
-        MAP.usething = Some(mo_idx);
-        MAP.use_result = UseResult::Nothing;
+        m.usething = Some(mo_idx);
+        m.use_result = UseResult::Nothing;
 
         let mobjs = ctx.mobjs();
         let mo = &mobjs[mo_idx];
@@ -942,30 +984,34 @@ pub fn p_use_lines(player_idx: usize, ctx: &mut dyn MapContext) {
 
         let fine = angle.to_fine_angle();
         let dist_int = USERANGE >> FRACBITS;
-        x1 = mo.x;
-        y1 = mo.y;
-        x2 = Fixed(x1.0 + dist_int * finecosine(fine).0);
-        y2 = Fixed(y1.0 + dist_int * FINESINE[fine].0);
+        let x1 = mo.x;
+        let y1 = mo.y;
+        let x2 = Fixed(x1.0 + dist_int * finecosine(fine).0);
+        let y2 = Fixed(y1.0 + dist_int * FINESINE[fine].0);
 
-        MAP.trace_x = x1;
-        MAP.trace_y = y1;
-        MAP.trace_dx = Fixed(x2.0 - x1.0);
-        MAP.trace_dy = Fixed(y2.0 - y1.0);
+        m.trace_x = x1;
+        m.trace_y = y1;
+        m.trace_dx = Fixed(x2.0 - x1.0);
+        m.trace_dy = Fixed(y2.0 - y1.0);
 
         // Stash level data pointers
-        stash_level_data(ctx);
-    }
+        stash_level_data(&mut m, ctx);
+        Some((x1, y1, x2, y2))
+    });
 
-    // Execute the path traverse (lines only, no things)
+    let (x1, y1, x2, y2) = match setup {
+        Some(coords) => coords,
+        None => return, // No player mobj — nothing to do.
+    };
+
+    // --- Phase 2: execute the path traverse (callback borrows MAP) ---
     ctx.do_path_traverse(x1, y1, x2, y2, PT_ADDLINES, ptr_use_traverse);
 
-    // Post-traverse dispatch
-    let use_result;
-    let usething;
-    unsafe {
-        use_result = MAP.use_result;
-        usething = MAP.usething;
-    }
+    // --- Phase 3: post-traverse dispatch ---
+    let (use_result, usething) = MAP.with(|cell| {
+        let m = cell.borrow();
+        (m.use_result, m.usething)
+    });
 
     match use_result {
         UseResult::Nothing => {
