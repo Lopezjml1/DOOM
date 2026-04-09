@@ -225,8 +225,8 @@ When launched with a valid IWAD:
 
 | Key | Action |
 |-----|--------|
-| Arrow Up / W | Move forward |
-| Arrow Down / S | Move backward |
+| Arrow Up | Move forward |
+| Arrow Down | Move backward |
 | Arrow Left | Turn left |
 | Arrow Right | Turn right |
 | Ctrl | Fire weapon |

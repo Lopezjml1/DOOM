@@ -6,28 +6,36 @@ source, disposition (fix or defer), and supporting rationale.
 
 ## Sources of Issues
 
-All issues in this matrix were derived from two sources:
+All issues in this matrix were derived from four sources:
 
 1. **`README.TXT`** (repository root) — John Carmack's release notes, dated December 23, 1997.
-   This is the only documentation file present in the repository that contains actionable
-   engineering notes about the codebase.
+   Contains high-level engineering commentary about the codebase, platform limitations, and
+   suggested improvement projects.
 
-2. **Inline source code comments** — Comments within the original C header and implementation
+2. **`linuxdoom-1.10/TODO`** (123 lines) — Bernd Kreimeier's to-do list for the Linux DOOM
+   source port. Contains actionable items including floating-point migration, screen resolution
+   changes, DGA support, sound server improvements, BSP/blockmap optimizations, collision height
+   fixes, and menu cleanup. Many items overlap with issues already captured from `README.TXT`.
+
+3. **`linuxdoom-1.10/ChangeLog`** (922 lines) — Bernd Kreimeier's work log documenting the
+   cleanup performed for the public source release (December 22, 1997). Records changes to
+   sound handling (`SNDSERV` vs `SNDINTR`), menu fixes for Ultimate DOOM episode 4, `V_DrawPatch`
+   bounds checking, sound table fallback loading, and other modifications made during the
+   Linux port preparation. Provides historical context for implementation decisions.
+
+4. **`linuxdoom-1.10/README.b`** (140 lines) — The README for the Linux DOOM source
+   distribution, authored by Bernd Kreimeier. Contains a disclaimer noting this is a modified
+   snapshot (not the exact id Software internal source), remarks about bug fixes and experimental
+   sound code, and notes about subsystems not included (SVGA, GLDOOM, Win32, DOS, DoomEd,
+   BSP tools, game data tools, artwork).
+
+5. **Inline source code comments** — Comments within the original C header and implementation
    files (`linuxdoom-1.10/*.c`, `linuxdoom-1.10/*.h`) that indicate known limitations,
-   experimental features, or removal candidates.
-
-### Files Confirmed Absent
-
-A comprehensive search of the entire repository confirmed that the following files
-**do not exist**, despite being commonly expected in open-source projects:
-
-- `linuxdoom-1.10/TODO` — Not found
-- `linuxdoom-1.10/ChangeLog` — Not found
-- `linuxdoom-1.10/README.b` — Not found
-
-Additionally, a `grep` search for inline annotations (`TODO`, `FIXME`, `HACK`, `XXX`, `BUG`)
-across all `.c` and `.h` files in the repository returned **zero results**. The codebase
-contains no developer-annotated work items of any kind.
+   experimental features, or removal candidates. A `grep` search for inline annotations found
+   **12 `FIXME`** occurrences across 9 `.c` files and **3 `HACK`** occurrences across 2 `.c`
+   files. No `TODO`, `XXX`, or `BUG` annotations were found in source code comments. The
+   `FIXME` annotations mark known limitations or incomplete implementations; the `HACK`
+   annotations mark intentional workarounds for edge cases in the commercial DOOM II release.
 
 ---
 
@@ -45,6 +53,12 @@ contains no developer-annotated work items of any kind.
 | IR-08 | `i_video.c`; `doomdef.h` lines 88–91 | MIT-SHM (X11 Shared Memory Extension) used for faster framebuffer transfer to X server; fallback to standard `XPutImage` if SHM unavailable. Comment also references `X11_DGA` (XFree86 Direct Graphics Access) as an alternative | Replaced by SDL2 texture streaming — no shared memory extension or DGA needed on Windows. SDL2 manages video memory and buffer transfer internally | To be fixed | SDL2 hardware-accelerated texture upload from 320×200 pixel buffer to window provides equivalent or better performance than X11 SHM | No significant risk — SDL2 abstracts all video memory management. The `doom-platform-win/src/video.rs` module handles palette-indexed to RGB conversion and window scaling |
 | IR-09 | `i_system.c`; `z_zone.h` | Zone memory allocator hardcoded to 6 MB heap (`mb_used = 6` in `i_system.c`). The zone system (`z_zone.c/h`) implements a custom heap with tag-based purge levels: `PU_STATIC` (1), `PU_SOUND` (2), `PU_MUSIC` (3), `PU_DAVE` (4), `PU_LEVEL` (50), `PU_LEVSPEC` (51), `PU_PURGELEVEL` (100), `PU_CACHE` (101) | Rust standard allocator replaces the zone heap — no fixed memory limit. WAD lump caching uses `HashMap` with purge tag tracking in `doom-wad/src/lump_cache.rs`. Level-scoped allocations use Rust ownership semantics (dropped at level change) | To be fixed | `cargo test` passes all memory-related tests; no allocation failures during gameplay; lump cache correctly evicts `PU_CACHE` entries under pressure | Risk: Zone tag semantics must be faithfully replicated for lump cache eviction. Tags < 100 are not overwritten until freed; tags ≥ 100 (`PU_PURGELEVEL`, `PU_CACHE`) are purgeable whenever needed. The `PU_LEVEL`/`PU_LEVSPEC` scope boundary (freed at level exit) must be honored |
 | IR-10 | `d_main.c` | IWAD search paths are Unix-specific: `/usr/local/share/games/doom/`, `$HOME` directory, and hardcoded Unix paths. No Windows path support exists in the original code | Windows-specific IWAD discovery: current working directory, common Steam installation paths (`C:\Program Files (x86)\Steam\steamapps\common\`), and explicit `--iwad` CLI argument via `clap` in `doom-bin/src/cli.rs` | To be fixed | `doom-bin --iwad <path>` correctly locates and loads IWAD files; clear error message displayed when IWAD not found | Risk: Low. Error message format: "IWAD file not found at path: ... . Please provide a valid path using --iwad \<path\>". The `doom-platform-win/src/filesystem.rs` module handles Windows path normalization |
+| IR-11 | `TODO` line 10 | "remove m_fixed, switch to floating point — More stable, and prolly even faster" | Deferred — fixed-point arithmetic preserved via `Fixed(i32)` newtype in Rust | Deferred | N/A | Behavioral parity requires preserving the original 16.16 fixed-point arithmetic. Switching to floating-point would change numerical results and break demo compatibility. See [Deferred Items](#ir-11-floating-point-migration) below |
+| IR-12 | `TODO` lines 13–18 | "make SCREENWIDTH/HEIGHT work at startup?" and "fix aspect ratio? 320x200 is nothing viable nowadays" | Deferred — original 320×200 resolution preserved; SDL2 window scaling handles display at native resolution | Deferred | N/A | The software renderer is tightly coupled to 320×200 pixel buffers. Changing the base resolution would require rewriting the renderer. SDL2 window scaling provides a clean display at any window size. See [Deferred Items](#ir-12-configurable-screen-resolution) below |
+| IR-13 | `TODO` lines 83–89 | "correct handling of height in collision. This is not done, and the checks are scattered around in many places" | Deferred — original collision behavior preserved for behavioral parity | Deferred | N/A | Height-based collision is a known limitation of the original DOOM engine (monsters cannot stand on top of each other, projectiles pass through some gaps). Fixing this would alter gameplay behavior. See [Deferred Items](#ir-13-collision-height-handling) below |
+| IR-14 | `TODO` lines 97–101 | "Ungraceful and untimely demise of Linuxdoom will leave idle sndserver processes" and "threaded sndserver? SHM mixing buffer?" | Addressed by IR-07 — the external `sndserver` process model is replaced by in-process SDL2 audio callbacks | To be fixed | SDL2 audio runs in-process; no orphaned child processes possible | The `sndserv/` architecture is entirely replaced. Process lifecycle issues are eliminated by design |
+| IR-15 | `FIXME` annotations (12 occurrences in 9 files) | Inline `FIXME` comments in `d_main.c` (×2), `d_net.c`, `f_finale.c`, `hu_stuff.c`, `i_sound.c` (×2), `m_menu.c`, `p_mobj.c` (×2), `p_tick.c`, `r_draw.c` marking known limitations such as version-dependent demo numbers, endianness concerns, NOP function pointers, and incomplete channel output | Deferred — all `FIXME` annotations represent informational markers for known edge-case limitations in the original engine, not blocking defects | Deferred | N/A | These annotations have existed since the 1997 public release and do not indicate runtime bugs. The Rust translation preserves the same behavioral characteristics. See [Deferred Items](#ir-15-fixme-annotations) below |
+| IR-16 | `HACK` annotations (3 occurrences in 2 files) | `s_sound.c:241` "HACK FOR COMMERCIAL" (commercial DOOM II music index offset), `wi_stuff.c:1609` "MONDO HACK!" and `wi_stuff.c:1618` "HACK ALERT!" (intermission screen layout workarounds for DOOM II) | Deferred — these are intentional workarounds for DOOM II–specific edge cases in the original engine, preserved in the Rust translation | Deferred | N/A | These workarounds are required for correct DOOM II behavior and are preserved as-is. See [Deferred Items](#ir-16-hack-annotations) below |
 
 ---
 
@@ -142,6 +156,113 @@ contains no developer-annotated work items of any kind.
   confirmed that no users rely on it. The removal would require coordinated changes to the
   renderer (`doom-render-soft`) and the menu system (`doom-core/src/ui/menu.rs`).
 
+### IR-11: Floating-Point Migration
+
+- **Reason deferred**: The `TODO` file suggests replacing `m_fixed` with floating-point
+  arithmetic for stability and performance. However, the entire DOOM engine's deterministic
+  behavior depends on the exact semantics of 16.16 fixed-point arithmetic, including truncation
+  direction, overflow wrapping, and bit-shift behavior. Switching to floating-point would produce
+  different numerical results in movement, collision, rendering, and AI calculations.
+
+- **Blocker**: Behavioral parity mandate — demo playback compatibility requires bit-identical
+  arithmetic results. Floating-point introduces platform-dependent rounding.
+
+- **User impact**: None — the `Fixed(i32)` newtype in Rust provides clean, well-defined
+  fixed-point operations with the same numerical behavior as the original C code.
+
+- **Workaround**: N/A — fixed-point performance is not a concern on modern hardware.
+
+- **Next action**: Could be explored in a future "enhanced mode" that disables demo
+  compatibility. Would require comprehensive regression testing across all levels.
+
+### IR-12: Configurable Screen Resolution
+
+- **Reason deferred**: The `TODO` file suggests making `SCREENWIDTH`/`SCREENHEIGHT`
+  configurable and fixing the 320×200 aspect ratio. The software renderer's column and span
+  drawing loops, visplane allocation, texture mapping, and sprite projection are all hardwired
+  to 320×200 pixel buffers. Changing the base resolution is effectively a renderer rewrite.
+
+- **Blocker**: The renderer architecture assumes 320×200 in hundreds of calculations across
+  `r_bsp.c`, `r_segs.c`, `r_plane.c`, `r_draw.c`, and `r_things.c`. The HUD and status bar
+  graphics are pixel-mapped to 320×200.
+
+- **User impact**: None — SDL2 window scaling provides clean display at any window size.
+  The game renders at 320×200 internally and is scaled up by SDL2.
+
+- **Workaround**: SDL2 window scaling handles display at native monitor resolution.
+
+- **Next action**: A future enhancement could implement a higher-resolution software renderer
+  or add an OpenGL/Vulkan backend with native resolution support.
+
+### IR-13: Collision Height Handling
+
+- **Reason deferred**: The `TODO` file notes that height-based collision detection "is not
+  done, and the checks are scattered around in many places." This is a known limitation of
+  the original DOOM engine — the collision system is essentially 2D with height checks only
+  for certain interactions. Fixing this would require significant changes to `p_map.c`,
+  `p_maputl.c`, `p_mobj.c`, and related modules.
+
+- **Blocker**: Behavioral parity — changing collision behavior would alter gameplay in every
+  level. Players and monsters use the 2D collision model as part of normal gameplay (e.g.,
+  running over monsters on different height platforms).
+
+- **User impact**: None — the original DOOM collision behavior is preserved exactly.
+
+- **Workaround**: N/A — this is an intentional design characteristic of the original engine.
+
+- **Next action**: Could be addressed in an "enhanced physics" mode with explicit opt-in.
+  Would require handling "player on top of monster" scenarios as noted in the `TODO` file.
+
+### IR-15: `FIXME` Annotations
+
+- **Reason deferred**: The 12 `FIXME` annotations across the original C source mark known
+  edge-case limitations and incomplete optimizations. Notable examples include:
+  - `d_main.c:452` — Version-dependent demo number selection
+  - `d_net.c:105` — Endianness concern in network byte packing
+  - `f_finale.c:184` — Missing alternative text/music for certain game modes
+  - `p_mobj.c:424,433` — Desire for a proper NOP/NULL function pointer
+  - `i_sound.c:708,716` — Incomplete channel output in experimental sound code
+  - `m_menu.c:1136` — Non-functional menu feature flagged for removal
+
+  None of these represent runtime bugs that affect normal gameplay. They are informational
+  markers left by the developers during the 1997 source cleanup.
+
+- **Blocker**: These are documentation annotations, not defects. Addressing them would
+  require gameplay behavior changes that violate the Minimal Change Clause.
+
+- **User impact**: None — these edge cases do not affect normal gameplay.
+
+- **Workaround**: N/A.
+
+- **Next action**: Individual `FIXME` items can be addressed in future enhancement phases
+  where behavioral changes are permitted. The Rust translation preserves the same behavioral
+  characteristics as the original code at each annotated location.
+
+### IR-16: `HACK` Annotations
+
+- **Reason deferred**: The 3 `HACK` annotations are intentional workarounds required for
+  correct DOOM II behavior:
+  - `s_sound.c:241` — "HACK FOR COMMERCIAL": Adjusts music lump index for DOOM II's
+    different music numbering scheme versus DOOM 1.
+  - `wi_stuff.c:1609` — "MONDO HACK!": Handles intermission screen layout differences
+    between DOOM 1 and DOOM II level progression.
+  - `wi_stuff.c:1618` — "HACK ALERT!": Additional intermission screen workaround for
+    DOOM II's non-episodic level structure.
+
+  These workarounds exist because DOOM II reuses the DOOM 1 engine with a different level
+  structure, and the engine adapts at runtime using these conditional branches.
+
+- **Blocker**: These workarounds are required for correct DOOM II functionality. Removing
+  them would break DOOM II intermission screens and music playback.
+
+- **User impact**: None — the workarounds produce correct behavior for both DOOM 1 and
+  DOOM II.
+
+- **Workaround**: N/A — these are the correct implementation, not temporary hacks.
+
+- **Next action**: A future refactor could replace these runtime checks with a cleaner
+  game-mode dispatch pattern, but the behavioral result must be identical.
+
 ---
 
 ## Methodology
@@ -153,9 +274,15 @@ to ensure comprehensive coverage:
 
 1. **Documentation file search**: A recursive `find` search was performed for common
    documentation and tracking files:
-   - `TODO`, `TODO.md`, `TODO.txt` — Not found
-   - `ChangeLog`, `CHANGELOG`, `CHANGELOG.md`, `changelog` — Not found
-   - `README.b` — Not found
+   - `linuxdoom-1.10/TODO` — Found (123 lines). Bernd Kreimeier's to-do list with items
+     ranging from floating-point migration to collision height fixes. Reviewed in full;
+     actionable items cataloged as IR-11, IR-12, IR-13, and IR-14
+   - `linuxdoom-1.10/ChangeLog` — Found (922 lines). Work log from December 1997 documenting
+     the Linux source port cleanup. Reviewed; provides historical context for implementation
+     decisions but contains no new actionable issues beyond those in `TODO` and `README.TXT`
+   - `linuxdoom-1.10/README.b` — Found (140 lines). README for the Linux DOOM source
+     distribution authored by Bernd Kreimeier. Reviewed; contains project context, disclaimers,
+     and subsystem notes (no new actionable issues)
    - `README.TXT` (root) — Found, analyzed in full (82 lines)
    - `README.asm` (linuxdoom-1.10/) — Found, contains assembly documentation only
    - `sersrc/README.TXT` — Found, contains serial networking documentation (out of scope)
@@ -163,9 +290,12 @@ to ensure comprehensive coverage:
 2. **Source code annotation search**: A `grep -rn` search was performed across all `.c` and
    `.h` files in `linuxdoom-1.10/`, `sndserv/`, `sersrc/`, and `ipx/` directories for the
    following patterns:
-   - `TODO` — Zero results
-   - `FIXME` — Zero results
-   - `HACK` — Zero results
+   - `TODO` — Zero results in source code comments
+   - `FIXME` — **12 occurrences** across 9 files: `d_main.c` (×2), `d_net.c`, `f_finale.c`,
+     `hu_stuff.c`, `i_sound.c` (×2), `m_menu.c`, `p_mobj.c` (×2), `p_tick.c`, `r_draw.c`.
+     Cataloged as IR-15
+   - `HACK` — **3 occurrences** across 2 files: `s_sound.c` (×1), `wi_stuff.c` (×2).
+     Cataloged as IR-16
    - `XXX` — Zero results
    - `BUG` / `BUGFIX` — Zero results
 
@@ -185,18 +315,31 @@ to ensure comprehensive coverage:
    - Lines 37–45: Movement and LOS checking critique (IR-04)
    - Lines 47–65: Suggested community projects (IR-05)
 
+5. **TODO file analysis**: The 123-line to-do list was analyzed for actionable items.
+   Many items overlap with issues already captured from `README.TXT` (rendering improvements,
+   LOS optimization, feature additions). New actionable items were cataloged:
+   - Line 10: Floating-point migration (IR-11)
+   - Lines 13–18: Configurable screen resolution (IR-12)
+   - Lines 83–89: Collision height handling (IR-13)
+   - Lines 97–101: Sound server lifecycle and threading (IR-14)
+
+6. **ChangeLog review**: The 922-line work log was reviewed for items not captured elsewhere.
+   The log primarily documents cleanup work already reflected in the final source code state.
+   No new actionable issues were identified beyond those in `TODO` and `README.TXT`.
+
 ### Issue Classification Criteria
 
 Issues were classified into two categories:
 
 - **To be fixed**: Issues that are directly addressed by the C → Rust migration and Windows 11
   platform retargeting. These include platform-specific code replacement (IR-01, IR-08, IR-10),
-  sound system reimplementation (IR-02, IR-07), and memory management modernization (IR-09).
+  sound system reimplementation (IR-02, IR-07, IR-14), and memory management modernization
+  (IR-09).
 
 - **Deferred**: Issues that represent feature enhancements, performance optimizations, or code
   cleanup that would alter the behavioral contract of the original engine. These are documented
   with full rationale, blocker analysis, user impact assessment, and recommended next actions
-  (IR-03, IR-04, IR-05, IR-06).
+  (IR-03, IR-04, IR-05, IR-06, IR-11, IR-12, IR-13, IR-15, IR-16).
 
 ### Zone Memory Tag Reference
 

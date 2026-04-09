@@ -119,7 +119,7 @@ backend or a pure-Rust winit + pixels + rodio stack) without modifying core game
 ## CLI Usage
 
 ```
-doom-bin [OPTIONS] --iwad <PATH>
+doom-rust [OPTIONS] --iwad <PATH>
 ```
 
 | Flag | Required | Description |
@@ -149,8 +149,8 @@ cargo run --release -- --iwad "C:\Games\DOOM2.WAD" --pwad "C:\Mods\mymod.wad" --
 
 | Key | Action |
 |-----|--------|
-| Arrow Up / W | Move forward |
-| Arrow Down / S | Move backward |
+| Arrow Up | Move forward |
+| Arrow Down | Move backward |
 | Arrow Left | Turn left |
 | Arrow Right | Turn right |
 | Ctrl | Fire weapon |

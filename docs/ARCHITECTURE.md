@@ -408,7 +408,7 @@ Use **`clap` 4.5** with derive macros for CLI parsing in `doom-bin/src/cli.rs`:
 
 - Better user experience with auto-generated help text and clear error messages for invalid arguments.
 - Standard `--flag` syntax replaces DOOM's original `-flag` convention. This is a minor behavioral change that improves usability.
-- The `MAXWADFILES = 20` limit is preserved but enforced through `clap` value validation rather than a fixed-size array.
+- The `MAXWADFILES = 20` limit is preserved and enforced at runtime in `doom-core/src/game/game_main.rs` (via a capacity check when adding WAD files) rather than through a fixed-size C array.
 - Additional original DOOM flags (`-devparm`, `-nomonsters`, `-respawn`, etc.) can be added incrementally as additional `clap` fields.
 
 ---
