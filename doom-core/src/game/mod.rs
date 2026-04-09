@@ -5,6 +5,7 @@
 
 // Submodules
 pub mod game_ctrl;
+pub mod game_loop;
 pub mod game_main;
 pub mod game_net;
 pub mod strings;
