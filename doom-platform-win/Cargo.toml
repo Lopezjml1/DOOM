@@ -1,0 +1,138 @@
+# =============================================================================
+# doom-platform-win — Windows 11 Platform Backend for DOOM 1.10 Rust Port
+# =============================================================================
+#
+# Translated from / replaces:
+#   linuxdoom-1.10/i_video.c  — X11/Xlib display, MIT-SHM, keyboard/mouse input
+#   linuxdoom-1.10/i_sound.c  — Linux OSS /dev/dsp audio, SNDSERV pipe model
+#   linuxdoom-1.10/i_system.c — gettimeofday() timing, zone memory allocation
+#   linuxdoom-1.10/i_net.c    — Unix UDP sockets (stubbed for single-player)
+#   linuxdoom-1.10/m_misc.c   — Unix file path handling (partially)
+#   sndserv/Makefile           — Standalone sound server build (eliminated)
+#   sndserv/soundsrv.c        — Sound server main loop (absorbed into audio.rs)
+#   sndserv/linux.c            — OSS /dev/dsp backend (absorbed into audio.rs)
+#
+# This crate is the SOLE location for platform-specific code in the entire
+# DOOM Rust workspace. It implements the PlatformHost and AudioBackend traits
+# defined in doom-core/src/traits/, providing:
+#
+#   window.rs      — SDL2 window creation, event loop, input mapping
+#                    (replaces X11 display from i_video.c)
+#   video.rs       — SDL2 Canvas/Texture for 320×200 → window scaling
+#                    (replaces MIT-SHM XImage from i_video.c)
+#   audio.rs       — SDL2 AudioDevice with callback-based SFX mixing and
+#                    music playback (replaces OSS /dev/dsp + SNDSERV pipe
+#                    model from i_sound.c and sndserv/)
+#   timer.rs       — High-resolution timing via std::time::Instant for tic
+#                    synchronization at TICRATE=35 Hz (replaces gettimeofday
+#                    from i_system.c)
+#   filesystem.rs  — Windows-specific file paths, IWAD discovery in common
+#                    Steam locations, config/save directories (replaces Unix
+#                    paths from d_main.c and m_misc.c)
+#   input.rs       — SDL2 keyboard/mouse → Event enum translation
+#                    (replaces XEvent handling from i_video.c)
+#
+# The original C platform layer was compiled via linuxdoom-1.10/Makefile:
+#   CC     = gcc
+#   CFLAGS = -g -Wall -DNORMALUNIX -DLINUX
+#   LIBS   = -lXext -lX11 -lnsl -lm
+#
+# In Rust, all platform dependencies are isolated in this single crate via
+# SDL2 with the `bundled` feature, which compiles SDL2 from C source during
+# `cargo build`. No pre-installed system libraries are required beyond a C
+# compiler (MSVC on Windows, gcc/clang on Linux for cross-compilation testing).
+#
+# The trait-based architecture enables future replacement of SDL2 with a
+# pure-Rust stack (winit + pixels + rodio) without modifying doom-core or
+# doom-render-soft.
+# =============================================================================
+
+[package]
+name = "doom-platform-win"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Windows 11 platform backend for DOOM 1.10 Rust port — SDL2-based window, input, audio, and timing"
+
+# =============================================================================
+# Dependencies — per AAP §0.6.2
+# =============================================================================
+#
+# CRITICAL CONSTRAINTS (AAP §0.4.1, §0.4.3):
+#   - YES sdl2 dependency — this is the ONLY crate in the workspace that
+#     depends on SDL2; all other crates are platform-independent
+#   - NO doom-wad dependency — WAD access goes through doom-core traits/types
+#   - NO doom-render-soft dependency — the renderer depends on doom-core, not
+#     this platform crate
+#   - NO doom-bin dependency — the binary crate depends on this, not the
+#     reverse
+#   - NO clap dependency — CLI parsing is in doom-bin only
+#   - NO bitflags dependency — bitflag types are defined in doom-core
+#   - NO byteorder dependency — byte reading is in doom-wad and doom-core
+#
+# Dependency graph: doom-platform-win depends on doom-core ONLY (among
+# doom-* crates). Platform-specific external crates (sdl2, dirs) are
+# confined to this crate.
+# =============================================================================
+
+[dependencies]
+# Path dependency to sibling crate. Provides the trait definitions that this
+# crate implements and the core types it operates on:
+#   - PlatformHost trait (doom-core/src/traits/platform.rs): window init,
+#     start_frame, start_tic, init_graphics, finish_update, set_palette,
+#     shut_down, get_time
+#   - AudioBackend trait (doom-core/src/traits/audio.rs): init_sound,
+#     start_sound, stop_sound, update_sound, music play/pause/volume
+#   - Event enum (doom-core/src/types/event.rs): KeyDown, KeyUp, Mouse,
+#     Joystick event types generated from SDL2 input
+#   - TicCmd struct (doom-core/src/types/ticcmd.rs): forwardmove, sidemove,
+#     angleturn, chatchar, buttons
+#   - Engine constants (doom-core/src/types/doomdef.rs): SCREENWIDTH=320,
+#     SCREENHEIGHT=200, TICRATE=35
+doom-core = { path = "../doom-core" }
+
+# SDL2 with bundled feature — THE critical platform dependency. Per AAP §0.1.2
+# platform backend decision, SDL2 was chosen over winit+pixels+rodio for:
+#   - Ecosystem alignment: DOOM source port community standard (Chocolate Doom,
+#     PrBoom+, Crispy Doom)
+#   - Integration simplicity: single library for window, input, audio, timing
+#   - Self-contained builds: `bundled` feature compiles SDL2 from C source
+#     during `cargo build`, no pre-installed system libraries required
+#   - Software rendering: Surface/Texture APIs support direct pixel buffer
+#     manipulation for 320×200 palettized framebuffer scaling
+#
+# Provides:
+#   sdl2::video::Window         — Window creation (replaces X11 XOpenDisplay)
+#   sdl2::render::Canvas        — Hardware-accelerated 2D rendering context
+#   sdl2::render::Texture       — Streaming texture for framebuffer upload
+#   sdl2::event::EventPump      — Input polling (replaces XNextEvent)
+#   sdl2::audio::AudioDevice    — Callback-based audio mixing (replaces OSS)
+#   sdl2::timer                 — Supplementary timing utilities
+sdl2 = { workspace = true }
+
+# Windows known-folder paths for locating user directories:
+#   dirs::config_dir()     → AppData/Roaming for config files (default.cfg)
+#   dirs::data_dir()       → AppData/Roaming for save game files
+#   dirs::document_dir()   → Documents folder fallback
+# Replaces Unix paths like /home/<user>/.doomrc and
+# /usr/local/share/games/doom/ from d_main.c and m_misc.c.
+dirs = { workspace = true }
+
+# Ergonomic custom error type derivation via #[derive(Error)]. Used for:
+#   PlatformError enum — SDL2 initialization failures, audio device errors,
+#   window creation errors, file system errors. Replaces the original C
+#   pattern of fprintf(stderr, ...) followed by exit(-1) with proper Rust
+#   Result/Error types that integrate with the ? operator.
+thiserror = { workspace = true }
+
+# Structured diagnostic logging framework. Replaces fprintf(stderr, ...) calls
+# in the original platform layer (e.g., "I_InitGraphics: ...", "I_InitSound:
+# ...", "I_ShutdownSound: ...") with structured tracing events:
+#   tracing::info!()  — Initialization success messages
+#   tracing::warn!()  — Non-fatal warnings (audio device fallback, etc.)
+#   tracing::error!() — Recoverable error conditions
+#   tracing::debug!() — Detailed diagnostic information (input events, timing)
+# Output filtering is controlled via RUST_LOG environment variable
+# (configured by tracing-subscriber in doom-bin).
+tracing = { workspace = true }

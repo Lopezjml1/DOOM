@@ -1,0 +1,9 @@
+# Rust toolchain configuration for the doom-rust workspace.
+# Ensures reproducible builds by pinning the stable channel and
+# requiring the Windows MSVC target along with formatting and lint tools.
+#
+# See: https://rust-lang.github.io/rustup/overrides.html#the-toolchain-file
+
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

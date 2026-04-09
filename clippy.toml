@@ -1,0 +1,25 @@
+# Clippy lint configuration for the doom-rust workspace.
+#
+# These thresholds are tuned for a faithful port of the id Software DOOM 1.10
+# engine from C to Rust. The original codebase contains large functions with
+# many parameters (play/render subsystems), complex state-machine logic
+# (enemy AI, collision detection), and deeply nested control flow that must
+# be preserved for behavioral parity. Raising these limits avoids artificial
+# refactoring that could introduce behavioral divergence from the original.
+
+# DOOM functions frequently pass many parameters through the call chain
+# (e.g., P_PathTraverse, R_RenderSegLoop, rendering context fields).
+too-many-arguments-threshold = 12
+
+# Some translated functions are necessarily large due to faithful porting of
+# state machines, data table initialisation, and multi-branch gameplay logic
+# (e.g., A_Chase, P_SpawnSpecials, R_RenderPlayerView).
+too-many-lines-threshold = 200
+
+# Game state structures can involve nested generics and trait objects when
+# combining platform traits with core game types.
+type-complexity-threshold = 350
+
+# Enemy AI routines, collision response, and special-sector logic have high
+# inherent cognitive complexity that mirrors the original C implementation.
+cognitive-complexity-threshold = 50

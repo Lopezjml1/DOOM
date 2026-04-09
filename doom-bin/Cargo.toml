@@ -1,0 +1,100 @@
+# =============================================================================
+# doom-bin — Executable Entry Point for DOOM Rust Port
+# =============================================================================
+#
+# Replaces: linuxdoom-1.10/Makefile (link step) + linuxdoom-1.10/i_main.c
+#
+# The original Makefile linked ~55 object files plus i_main.o into a single
+# `linuxxdoom` ELF binary using:
+#   $(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) $(O)/i_main.o -o $(O)/linuxxdoom $(LIBS)
+# where LIBS = -lXext -lX11 -lnsl -lm
+#
+# This crate replaces that link step with a Cargo binary crate that wires
+# together all four library crates into a playable DOOM executable for
+# Windows 11. The original i_main.c was a trivial entry point:
+#   int main(int argc, char** argv) { myargc=argc; myargv=argv; D_DoomMain(); }
+#
+# This crate's src/main.rs is the Rust equivalent: it initialises tracing,
+# parses CLI arguments via clap, constructs the platform host (SDL2 backend),
+# and calls the D_DoomMain-equivalent game loop in doom-core.
+#
+# Build:  cargo build --release
+# Run:    cargo run --release -- --iwad <path-to-DOOM2.WAD>
+# =============================================================================
+
+[package]
+name = "doom-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "DOOM 1.10 Rust port — executable entry point for Windows 11"
+
+# Produce a binary named `doom-rust` (doom-rust.exe on Windows) instead of
+# the default `doom-bin`. This gives users a cleaner executable name while
+# keeping the Cargo crate name as `doom-bin` for workspace consistency.
+[[bin]]
+name = "doom-rust"
+path = "src/main.rs"
+
+# =============================================================================
+# Dependencies
+# =============================================================================
+#
+# doom-bin is the final integration point — it depends on ALL FOUR library
+# crates to wire them together at application startup.
+#
+# Dependency graph (AAP §0.4.1):
+#   doom-bin ──► doom-core           (game logic, types, trait definitions)
+#           ──► doom-wad             (WAD/IWAD file parsing and lump cache)
+#           ──► doom-render-soft     (software renderer, Renderer trait impl)
+#           ──► doom-platform-win    (Windows 11 SDL2 backend, PlatformHost impl)
+#           ──► clap                 (CLI argument parsing: --iwad, --warp, etc.)
+#           ──► tracing              (structured diagnostic logging)
+#           ──► tracing-subscriber   (log output formatting and RUST_LOG filter)
+#
+# NOT directly depended on (accessed transitively through library crates):
+#   sdl2       — used only in doom-platform-win
+#   bitflags   — used only in doom-core
+#   byteorder  — used only in doom-wad and doom-core
+#   thiserror  — used only in doom-wad, doom-core, and doom-platform-win
+#   dirs       — used only in doom-platform-win
+# =============================================================================
+
+[dependencies]
+
+# --- Workspace library crates (path dependencies) ---
+
+# Deterministic game logic: D_DoomMain, game loop, play systems, types,
+# trait definitions (PlatformHost, Renderer, AudioBackend, WadProvider),
+# UI subsystems, video buffer management, and utility modules.
+doom-core = { path = "../doom-core" }
+
+# WAD/IWAD file parsing: lump directory construction, name-based lookup,
+# tag-based lump cache (replacing the C zone memory allocator for lump data).
+doom-wad = { path = "../doom-wad" }
+
+# Software renderer: BSP traversal, wall/floor/ceiling/sprite drawing,
+# implements the Renderer trait consumed by doom-core's game loop.
+doom-render-soft = { path = "../doom-render-soft" }
+
+# Windows 11 platform backend: SDL2-based window creation, input handling,
+# audio playback, high-resolution timing, and filesystem utilities.
+# Implements PlatformHost and AudioBackend traits.
+doom-platform-win = { path = "../doom-platform-win" }
+
+# --- External crates (versions from workspace — AAP §0.6.1) ---
+
+# CLI argument parsing with derive macros. Provides #[derive(Parser)] for
+# typed --iwad, --pwad, --warp, --skill, --verbose arguments. Replaces the
+# original myargc/myargv + M_CheckParm pattern from m_argv.c.
+clap = { workspace = true }
+
+# Structured diagnostic logging framework. Replaces printf/fprintf(stderr,...)
+# throughout the codebase with tracing::info!(), warn!(), error!(), debug!().
+tracing = { workspace = true }
+
+# Log output subscriber with env-filter feature for runtime filtering via
+# the RUST_LOG environment variable (e.g., RUST_LOG=doom_core=debug).
+# Initialised in main() before any game code runs.
+tracing-subscriber = { workspace = true }
