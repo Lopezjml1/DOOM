@@ -57,7 +57,7 @@ rust-version = "1.75"
 # SDL2 with bundled feature compiles SDL2 from C source during cargo build,
 # making the build self-contained on Windows 11 without pre-installed system
 # libraries. Provides window management, input, audio, and timer facilities.
-sdl2 = { version = "0.37", features = ["bundled"] }
+sdl2 = { version = "0.37", features = ["bundled", "static-link"] }
 
 # Derive-based CLI argument parsing for --iwad, --pwad, --warp, --skill flags.
 clap = { version = "4.5", features = ["derive"] }
