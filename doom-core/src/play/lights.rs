@@ -613,7 +613,7 @@ mod tests {
         // Light should be between minlight and maxlight
         let light = sectors[0].lightlevel as i32;
         assert!(
-            light >= 100 && light <= 200,
+            (100..=200).contains(&light),
             "Light {} out of range [100, 200]",
             light
         );
@@ -638,7 +638,7 @@ mod tests {
             t_fire_flicker(&mut flicker, &mut sectors, &mut rng);
             let light = sectors[0].lightlevel as i32;
             assert!(
-                light >= 170 && light <= 180,
+                (170..=180).contains(&light),
                 "Light {} out of range [170, 180]",
                 light
             );

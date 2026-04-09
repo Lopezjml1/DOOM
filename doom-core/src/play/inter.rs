@@ -379,26 +379,161 @@ pub trait InterContext: MobjContext {
 // Sprite helper
 // =============================================================================
 
+/// Safe lookup table: all SpriteNum variants in discriminant order.
+/// Used for safe usize-to-enum conversion without transmute.
+const SPRITE_NUM_TABLE: [SpriteNum; crate::info::sprites::NUMSPRITES] = [
+    SpriteNum::SPR_TROO,
+    SpriteNum::SPR_SHTG,
+    SpriteNum::SPR_PUNG,
+    SpriteNum::SPR_PISG,
+    SpriteNum::SPR_PISF,
+    SpriteNum::SPR_SHTF,
+    SpriteNum::SPR_SHT2,
+    SpriteNum::SPR_CHGG,
+    SpriteNum::SPR_CHGF,
+    SpriteNum::SPR_MISG,
+    SpriteNum::SPR_MISF,
+    SpriteNum::SPR_SAWG,
+    SpriteNum::SPR_PLSG,
+    SpriteNum::SPR_PLSF,
+    SpriteNum::SPR_BFGG,
+    SpriteNum::SPR_BFGF,
+    SpriteNum::SPR_BLUD,
+    SpriteNum::SPR_PUFF,
+    SpriteNum::SPR_BAL1,
+    SpriteNum::SPR_BAL2,
+    SpriteNum::SPR_PLSS,
+    SpriteNum::SPR_PLSE,
+    SpriteNum::SPR_MISL,
+    SpriteNum::SPR_BFS1,
+    SpriteNum::SPR_BFE1,
+    SpriteNum::SPR_BFE2,
+    SpriteNum::SPR_TFOG,
+    SpriteNum::SPR_IFOG,
+    SpriteNum::SPR_PLAY,
+    SpriteNum::SPR_POSS,
+    SpriteNum::SPR_SPOS,
+    SpriteNum::SPR_VILE,
+    SpriteNum::SPR_FIRE,
+    SpriteNum::SPR_FATB,
+    SpriteNum::SPR_FBXP,
+    SpriteNum::SPR_SKEL,
+    SpriteNum::SPR_MANF,
+    SpriteNum::SPR_FATT,
+    SpriteNum::SPR_CPOS,
+    SpriteNum::SPR_SARG,
+    SpriteNum::SPR_HEAD,
+    SpriteNum::SPR_BAL7,
+    SpriteNum::SPR_BOSS,
+    SpriteNum::SPR_BOS2,
+    SpriteNum::SPR_SKUL,
+    SpriteNum::SPR_SPID,
+    SpriteNum::SPR_BSPI,
+    SpriteNum::SPR_APLS,
+    SpriteNum::SPR_APBX,
+    SpriteNum::SPR_CYBR,
+    SpriteNum::SPR_PAIN,
+    SpriteNum::SPR_SSWV,
+    SpriteNum::SPR_KEEN,
+    SpriteNum::SPR_BBRN,
+    SpriteNum::SPR_BOSF,
+    SpriteNum::SPR_ARM1,
+    SpriteNum::SPR_ARM2,
+    SpriteNum::SPR_BAR1,
+    SpriteNum::SPR_BEXP,
+    SpriteNum::SPR_FCAN,
+    SpriteNum::SPR_BON1,
+    SpriteNum::SPR_BON2,
+    SpriteNum::SPR_BKEY,
+    SpriteNum::SPR_RKEY,
+    SpriteNum::SPR_YKEY,
+    SpriteNum::SPR_BSKU,
+    SpriteNum::SPR_RSKU,
+    SpriteNum::SPR_YSKU,
+    SpriteNum::SPR_STIM,
+    SpriteNum::SPR_MEDI,
+    SpriteNum::SPR_SOUL,
+    SpriteNum::SPR_PINV,
+    SpriteNum::SPR_PSTR,
+    SpriteNum::SPR_PINS,
+    SpriteNum::SPR_MEGA,
+    SpriteNum::SPR_SUIT,
+    SpriteNum::SPR_PMAP,
+    SpriteNum::SPR_PVIS,
+    SpriteNum::SPR_CLIP,
+    SpriteNum::SPR_AMMO,
+    SpriteNum::SPR_ROCK,
+    SpriteNum::SPR_BROK,
+    SpriteNum::SPR_CELL,
+    SpriteNum::SPR_CELP,
+    SpriteNum::SPR_SHEL,
+    SpriteNum::SPR_SBOX,
+    SpriteNum::SPR_BPAK,
+    SpriteNum::SPR_BFUG,
+    SpriteNum::SPR_MGUN,
+    SpriteNum::SPR_CSAW,
+    SpriteNum::SPR_LAUN,
+    SpriteNum::SPR_PLAS,
+    SpriteNum::SPR_SHOT,
+    SpriteNum::SPR_SGN2,
+    SpriteNum::SPR_COLU,
+    SpriteNum::SPR_SMT2,
+    SpriteNum::SPR_GOR1,
+    SpriteNum::SPR_POL2,
+    SpriteNum::SPR_POL5,
+    SpriteNum::SPR_POL4,
+    SpriteNum::SPR_POL3,
+    SpriteNum::SPR_POL1,
+    SpriteNum::SPR_POL6,
+    SpriteNum::SPR_GOR2,
+    SpriteNum::SPR_GOR3,
+    SpriteNum::SPR_GOR4,
+    SpriteNum::SPR_GOR5,
+    SpriteNum::SPR_SMIT,
+    SpriteNum::SPR_COL1,
+    SpriteNum::SPR_COL2,
+    SpriteNum::SPR_COL3,
+    SpriteNum::SPR_COL4,
+    SpriteNum::SPR_CAND,
+    SpriteNum::SPR_CBRA,
+    SpriteNum::SPR_COL6,
+    SpriteNum::SPR_TRE1,
+    SpriteNum::SPR_TRE2,
+    SpriteNum::SPR_ELEC,
+    SpriteNum::SPR_CEYE,
+    SpriteNum::SPR_FSKU,
+    SpriteNum::SPR_COL5,
+    SpriteNum::SPR_TBLU,
+    SpriteNum::SPR_TGRN,
+    SpriteNum::SPR_TRED,
+    SpriteNum::SPR_SMBT,
+    SpriteNum::SPR_SMGT,
+    SpriteNum::SPR_SMRT,
+    SpriteNum::SPR_HDB1,
+    SpriteNum::SPR_HDB2,
+    SpriteNum::SPR_HDB3,
+    SpriteNum::SPR_HDB4,
+    SpriteNum::SPR_HDB5,
+    SpriteNum::SPR_HDB6,
+    SpriteNum::SPR_POB1,
+    SpriteNum::SPR_POB2,
+    SpriteNum::SPR_BRS1,
+    SpriteNum::SPR_TLMP,
+    SpriteNum::SPR_TLP2,
+];
+
 /// Convert a usize sprite index to a `SpriteNum` enum value.
 /// Returns `None` if the index is out of range.
+/// Uses a compile-time lookup table for safe conversion without transmute.
 fn sprite_from_usize(sprite: usize) -> Option<SpriteNum> {
-    if sprite <= SpriteNum::SPR_TLP2 as usize {
-        // SAFETY: SpriteNum is repr(usize) with contiguous values 0..=137.
-        // We have verified the value is in range.
-        Some(unsafe { core::mem::transmute::<usize, SpriteNum>(sprite) })
-    } else {
-        None
-    }
+    SPRITE_NUM_TABLE.get(sprite).copied()
 }
 
 /// Convert a usize to a `MobjType` enum value.
 /// Returns `None` if the index is out of range.
+/// Delegates to the safe `MobjType::from_index` lookup table.
 fn mobjtype_from_usize(v: usize) -> Option<MobjType> {
-    if v < crate::info::mobjinfo::NUMMOBJTYPES {
-        Some(unsafe { core::mem::transmute::<usize, MobjType>(v) })
-    } else {
-        None
-    }
+    MobjType::from_index(v)
 }
 
 // =============================================================================

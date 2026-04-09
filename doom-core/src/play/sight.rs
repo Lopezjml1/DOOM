@@ -34,10 +34,7 @@
 //! * REJECT table byte/bit addressing and BSP traversal order are identical
 //!   to the original engine.
 
-// Static-mut globals match the original C pattern used throughout the DOOM
-// engine (e.g. `maputl.rs`).  They are safe in DOOM's single-threaded
-// game-loop context.
-#![allow(non_upper_case_globals)]
+use std::cell::RefCell;
 
 use crate::play::maputl::Divline;
 use crate::play::setup::LevelData;
@@ -47,53 +44,104 @@ use crate::types::mobj::MapObject;
 
 // ==========================================================================
 // Module-level state  (p_sight.c lines 39-47)
+//
+// Consolidated into a `SightState` struct stored in a thread-local RefCell
+// to replace the original `static mut` declarations.  This preserves the
+// single-entry-point access pattern of DOOM's game loop while providing
+// safe Rust semantics.
 // ==========================================================================
 
-/// Eye-Z of the looker: `t1.z + t1.height - (t1.height >> 2)` (3/4 of total
-/// height above the floor).
-static mut sightzstart: Fixed = Fixed(0);
-
-/// Slope to the **top** of the target.
+/// Consolidated line-of-sight traversal state.
 ///
-/// Shared with `map.rs` — `PTR_AimTraverse` reads/writes this value for
-/// vertical auto-aim.  Original C: `fixed_t topslope;` (p_sight.c line 40).
-pub static mut topslope: Fixed = Fixed(0);
-
-/// Slope to the **bottom** of the target.
+/// Replaces the nine individual `static mut` variables from the original C
+/// implementation with a single struct stored in a `thread_local!` `RefCell`.
+/// The fields mirror the original globals exactly:
 ///
-/// Shared with `map.rs` — `PTR_AimTraverse` reads/writes this value for
-/// vertical auto-aim.  Original C: `fixed_t bottomslope;` (p_sight.c line 41).
-pub static mut bottomslope: Fixed = Fixed(0);
+/// * `sightzstart` — eye-Z of the looker (3/4 of total height)
+/// * `topslope` / `bottomslope` — vertical slope window (shared with `map.rs`)
+/// * `strace` — trace divline from looker to target
+/// * `t2x`, `t2y` — cached target position for BSP traversal
+/// * `sightcounts` — statistics counters (`[0]` = REJECT hits, `[1]` = BSP runs)
+/// * `validcount` — deduplication frame counter for linedefs
+struct SightState {
+    sightzstart: Fixed,
+    topslope: Fixed,
+    bottomslope: Fixed,
+    strace: Divline,
+    t2x: Fixed,
+    t2y: Fixed,
+    sightcounts: [i32; 2],
+    validcount: i32,
+}
 
-/// Trace divline from the looker (`t1`) to the target (`t2`).
-static mut strace: Divline = Divline {
-    x: Fixed(0),
-    y: Fixed(0),
-    dx: Fixed(0),
-    dy: Fixed(0),
-};
+impl SightState {
+    const fn new() -> Self {
+        Self {
+            sightzstart: Fixed(0),
+            topslope: Fixed(0),
+            bottomslope: Fixed(0),
+            strace: Divline {
+                x: Fixed(0),
+                y: Fixed(0),
+                dx: Fixed(0),
+                dy: Fixed(0),
+            },
+            t2x: Fixed(0),
+            t2y: Fixed(0),
+            sightcounts: [0; 2],
+            validcount: 0,
+        }
+    }
+}
 
-/// Cached target X position, used in [`p_cross_bsp_node`] and
-/// [`p_cross_subsector`] to check the target-side of partition lines.
-static mut t2x: Fixed = Fixed(0);
+thread_local! {
+    /// Thread-local sight traversal state.
+    ///
+    /// This replaces the original `static mut` globals.  Access is through
+    /// the `SIGHT` cell with brief borrows that never span function calls,
+    /// ensuring no runtime borrow conflicts.
+    static SIGHT: RefCell<SightState> = const { RefCell::new(SightState::new()) };
+}
 
-/// Cached target Y position.
-static mut t2y: Fixed = Fixed(0);
+// ---------------------------------------------------------------------------
+// Public accessors for fields shared with `map.rs` (PTR_AimTraverse)
+// ---------------------------------------------------------------------------
 
-/// Sight-check statistics counters.
+/// Read the current `topslope` value.
 ///
-/// * `[0]` — number of checks trivially rejected by the REJECT table.
-/// * `[1]` — number of checks that required full BSP traversal.
-pub static mut sightcounts: [i32; 2] = [0; 2];
+/// Shared with `map.rs` — `ptr_aim_traverse` reads this value for vertical
+/// auto-aim.  Original C: `fixed_t topslope;` (p_sight.c line 40).
+pub fn get_topslope() -> Fixed {
+    SIGHT.with(|s| s.borrow().topslope)
+}
 
-/// Validation frame counter.  Incremented once per [`p_check_sight`] call so
-/// that [`p_cross_subsector`] can skip linedefs that have already been tested
-/// within the same call (deduplication via `LineDef::validcount`).
+/// Write a new `topslope` value.
+pub fn set_topslope(val: Fixed) {
+    SIGHT.with(|s| s.borrow_mut().topslope = val);
+}
+
+/// Read the current `bottomslope` value.
 ///
-/// In the original C engine this lives in `r_main.c` and is shared across
-/// sight checks, path traversal, and BSP rendering.  Here it is defined as a
-/// module-level static; other modules needing the same counter can import it.
-pub static mut validcount: i32 = 0;
+/// Shared with `map.rs` — `ptr_aim_traverse` reads this value for vertical
+/// auto-aim.  Original C: `fixed_t bottomslope;` (p_sight.c line 41).
+pub fn get_bottomslope() -> Fixed {
+    SIGHT.with(|s| s.borrow().bottomslope)
+}
+
+/// Write a new `bottomslope` value.
+pub fn set_bottomslope(val: Fixed) {
+    SIGHT.with(|s| s.borrow_mut().bottomslope = val);
+}
+
+/// Read the sight-check statistics counters.
+pub fn get_sightcounts() -> [i32; 2] {
+    SIGHT.with(|s| s.borrow().sightcounts)
+}
+
+/// Read the current validation frame counter.
+pub fn get_validcount() -> i32 {
+    SIGHT.with(|s| s.borrow().validcount)
+}
 
 // ==========================================================================
 // P_DivlineSide  (p_sight.c lines 54-99)
@@ -191,26 +239,20 @@ fn p_intercept_vector2(v2: &Divline, v1: &Divline) -> Fixed {
 // P_CrossSubsector  (p_sight.c lines 135-248)
 // ==========================================================================
 
-/// Check whether the sight trace ([`strace`]) crosses through the given
-/// subsector without being fully occluded.
+/// Check whether the sight trace crosses through the given subsector without
+/// being fully occluded.
 ///
 /// Iterates every seg in the subsector; for each seg whose linedef is crossed
 /// by the trace, narrows the vertical slope window (`topslope` /
 /// `bottomslope`) based on floor and ceiling height changes.
 ///
 /// Returns `true` if the trace passes through the subsector unblocked.
-///
-/// # Safety
-///
-/// Accesses module-level `static mut` globals (`strace`, `t2x`, `t2y`,
-/// `sightzstart`, `topslope`, `bottomslope`, `validcount`).
-/// Must only be called from the single-threaded game loop.
-unsafe fn p_cross_subsector(num: usize, level: &mut LevelData) -> bool {
-    // Snapshot module-level strace and t2 coordinates into locals to avoid
-    // creating shared references to `static mut` (Rust 2024 safety).
-    let strace_local = strace;
-    let t2x_local = t2x;
-    let t2y_local = t2y;
+fn p_cross_subsector(num: usize, level: &mut LevelData) -> bool {
+    // Snapshot the immutable traversal state from the thread-local into locals.
+    let (strace_local, t2x_local, t2y_local, sightzstart_local, validcount_val) = SIGHT.with(|s| {
+        let st = s.borrow();
+        (st.strace, st.t2x, st.t2y, st.sightzstart, st.validcount)
+    });
 
     // Retrieve subsector metadata (copy to avoid overlapping borrows).
     let count = level.subsectors[num].numlines as usize;
@@ -225,10 +267,10 @@ unsafe fn p_cross_subsector(num: usize, level: &mut LevelData) -> bool {
         let backsector_idx = level.segs[seg_idx].backsector;
 
         // -- Skip already-checked linedefs (validcount deduplication) ----------
-        if level.lines[line_idx].validcount == validcount {
+        if level.lines[line_idx].validcount == validcount_val {
             continue;
         }
-        level.lines[line_idx].validcount = validcount;
+        level.lines[line_idx].validcount = validcount_val;
 
         // -- Get linedef vertex coordinates -----------------------------------
         let v1_idx = level.lines[line_idx].v1;
@@ -311,23 +353,25 @@ unsafe fn p_cross_subsector(num: usize, level: &mut LevelData) -> bool {
         // Fractional intercept along the sight trace.
         let frac = p_intercept_vector2(&strace_local, &divl);
 
-        // Narrow the vertical slope window based on height changes.
-        if front_floor != back_floor {
-            let slope = (openbottom - sightzstart).fixed_div(frac);
-            if slope > bottomslope {
-                bottomslope = slope;
+        // Narrow the vertical slope window and check for full occlusion.
+        // Access the thread-local state briefly for slope updates.
+        let blocked = SIGHT.with(|s| {
+            let mut st = s.borrow_mut();
+            if front_floor != back_floor {
+                let slope = (openbottom - sightzstart_local).fixed_div(frac);
+                if slope > st.bottomslope {
+                    st.bottomslope = slope;
+                }
             }
-        }
-
-        if front_ceiling != back_ceiling {
-            let slope = (opentop - sightzstart).fixed_div(frac);
-            if slope < topslope {
-                topslope = slope;
+            if front_ceiling != back_ceiling {
+                let slope = (opentop - sightzstart_local).fixed_div(frac);
+                if slope < st.topslope {
+                    st.topslope = slope;
+                }
             }
-        }
-
-        // Fully occluded?
-        if topslope <= bottomslope {
+            st.topslope <= st.bottomslope
+        });
+        if blocked {
             return false;
         }
     }
@@ -348,12 +392,7 @@ unsafe fn p_cross_subsector(num: usize, level: &mut LevelData) -> bool {
 /// trace is checked against both children as needed: first the side
 /// containing the trace origin, then (only if the target is on the opposite
 /// side) the other child.
-///
-/// # Safety
-///
-/// Accesses module-level `static mut` globals (`strace`, `t2x`, `t2y`) and
-/// calls [`p_cross_subsector`] which accesses additional globals.
-unsafe fn p_cross_bsp_node(bspnum: i32, level: &mut LevelData) -> bool {
+fn p_cross_bsp_node(bspnum: i32, level: &mut LevelData) -> bool {
     // -- Leaf node (subsector) ------------------------------------------------
     if bspnum & (NF_SUBSECTOR as i32) != 0 {
         if bspnum == -1 {
@@ -364,11 +403,11 @@ unsafe fn p_cross_bsp_node(bspnum: i32, level: &mut LevelData) -> bool {
     }
 
     // -- Internal node --------------------------------------------------------
-    // Snapshot module-level strace and t2 coordinates into locals to avoid
-    // creating shared references to `static mut` (Rust 2024 safety).
-    let strace_local = strace;
-    let t2x_local = t2x;
-    let t2y_local = t2y;
+    // Snapshot the immutable traversal state from the thread-local into locals.
+    let (strace_local, t2x_local, t2y_local) = SIGHT.with(|s| {
+        let st = s.borrow();
+        (st.strace, st.t2x, st.t2y)
+    });
 
     // Copy fields from the node to avoid holding a borrow across the
     // recursive `&mut level` calls.
@@ -433,67 +472,68 @@ unsafe fn p_cross_bsp_node(bspnum: i32, level: &mut LevelData) -> bool {
 ///
 /// `true` if there is an unobstructed line-of-sight from `t1` to `t2`.
 pub fn p_check_sight(t1: &MapObject, t2: &MapObject, level: &mut LevelData) -> bool {
-    // Safety: All static-mut access is confined to DOOM's single-threaded
-    // game loop.  No concurrent access is possible.
-    unsafe {
-        // ==================================================================
-        // Phase 1 — REJECT table quick check
-        // ==================================================================
+    // ==================================================================
+    // Phase 1 — REJECT table quick check
+    // ==================================================================
 
-        // Determine sector indices for both objects.
-        let t1_sub = match t1.subsector {
-            Some(idx) => idx,
-            None => return false,
-        };
-        let t2_sub = match t2.subsector {
-            Some(idx) => idx,
-            None => return false,
-        };
+    // Determine sector indices for both objects.
+    let t1_sub = match t1.subsector {
+        Some(idx) => idx,
+        None => return false,
+    };
+    let t2_sub = match t2.subsector {
+        Some(idx) => idx,
+        None => return false,
+    };
 
-        let s1 = level.subsectors[t1_sub].sector;
-        let s2 = level.subsectors[t2_sub].sector;
-        let numsectors = level.sectors.len();
-        let pnum: usize = s1.wrapping_mul(numsectors).wrapping_add(s2);
-        let bytenum: usize = pnum >> 3;
-        let bitnum: u8 = 1u8 << (pnum & 7);
+    let s1 = level.subsectors[t1_sub].sector;
+    let s2 = level.subsectors[t2_sub].sector;
+    let numsectors = level.sectors.len();
+    let pnum: usize = s1.wrapping_mul(numsectors).wrapping_add(s2);
+    let bytenum: usize = pnum >> 3;
+    let bitnum: u8 = 1u8 << (pnum & 7);
 
-        // Check reject matrix.
-        if bytenum < level.reject_matrix.len() && (level.reject_matrix[bytenum] & bitnum) != 0 {
-            sightcounts[0] += 1;
-            return false; // can't possibly be connected
-        }
+    // Check reject matrix.
+    if bytenum < level.reject_matrix.len() && (level.reject_matrix[bytenum] & bitnum) != 0 {
+        SIGHT.with(|s| s.borrow_mut().sightcounts[0] += 1);
+        return false; // can't possibly be connected
+    }
 
-        // ==================================================================
-        // Phase 2 — Full BSP traversal
-        // ==================================================================
+    // ==================================================================
+    // Phase 2 — Full BSP traversal
+    // ==================================================================
 
-        sightcounts[1] += 1;
+    // Set up all traversal state in the thread-local before beginning BSP walk.
+    let sightzstart_val = t1.z + t1.height - Fixed(t1.height.0 >> 2);
+    SIGHT.with(|s| {
+        let mut st = s.borrow_mut();
+        st.sightcounts[1] += 1;
 
         // Bump the validation counter to invalidate all previous line marks.
-        validcount += 1;
+        st.validcount += 1;
 
         // Eye Z at 3/4 of the looker's height.
-        sightzstart = t1.z + t1.height - Fixed(t1.height.0 >> 2);
+        st.sightzstart = sightzstart_val;
 
         // Initial slope window: full vertical extent of the target.
-        topslope = (t2.z + t2.height) - sightzstart;
-        bottomslope = t2.z - sightzstart;
+        st.topslope = (t2.z + t2.height) - sightzstart_val;
+        st.bottomslope = t2.z - sightzstart_val;
 
         // Set up the trace divline from t1 to t2.
-        strace = Divline {
+        st.strace = Divline {
             x: t1.x,
             y: t1.y,
             dx: Fixed(t2.x.0.wrapping_sub(t1.x.0)),
             dy: Fixed(t2.y.0.wrapping_sub(t1.y.0)),
         };
 
-        t2x = t2.x;
-        t2y = t2.y;
+        st.t2x = t2.x;
+        st.t2y = t2.y;
+    });
 
-        // Start the recursive BSP traversal from the root node.
-        let num_nodes = level.nodes.len() as i32;
-        p_cross_bsp_node(num_nodes - 1, level)
-    }
+    // Start the recursive BSP traversal from the root node.
+    let num_nodes = level.nodes.len() as i32;
+    p_cross_bsp_node(num_nodes - 1, level)
 }
 
 // ==========================================================================

@@ -161,19 +161,15 @@ struct MapState {
     // --- Deferred use result ---
     use_result: UseResult,
 
-    // --- Raw data pointers (valid only during traversal) ---
-    // SAFETY: These raw pointers are set by `stash_level_data()` immediately
-    // before a traversal call and are only dereferenced during that traversal.
-    // The data they point to (lines, sectors, mobjs, vertexes) is owned by
-    // the `MapContext` and guaranteed live for the duration of the traversal.
-    lines_ptr: *const LineDef,
-    lines_len: usize,
-    sectors_ptr: *const Sector,
-    sectors_len: usize,
-    mobjs_ptr: *const MapObject,
-    mobjs_len: usize,
-    vertexes_ptr: *const Vertex,
-    vertexes_len: usize,
+    // --- Cached level data (cloned into thread-local for callback access) ---
+    // These owned copies are populated by `stash_level_data()` immediately
+    // before a traversal call, allowing bare function-pointer callbacks
+    // (which cannot capture environment) to access level data through the
+    // thread-local without raw pointers or unsafe code.
+    cached_lines: Vec<LineDef>,
+    cached_sectors: Vec<Sector>,
+    cached_mobjs: Vec<MapObject>,
+    cached_vertexes: Vec<Vertex>,
 }
 
 impl MapState {
@@ -197,14 +193,10 @@ impl MapState {
             shoot_special_count: 0,
             shoot_hit: ShootHit::Nothing,
             use_result: UseResult::Nothing,
-            lines_ptr: std::ptr::null(),
-            lines_len: 0,
-            sectors_ptr: std::ptr::null(),
-            sectors_len: 0,
-            mobjs_ptr: std::ptr::null(),
-            mobjs_len: 0,
-            vertexes_ptr: std::ptr::null(),
-            vertexes_len: 0,
+            cached_lines: Vec::new(),
+            cached_sectors: Vec::new(),
+            cached_mobjs: Vec::new(),
+            cached_vertexes: Vec::new(),
         }
     }
 }
@@ -235,70 +227,61 @@ thread_local! {
 //
 // The bare-function-pointer callback ABI means traversal callbacks cannot
 // borrow the context directly. During traversal, `stash_level_data`
-// copies raw pointers into the thread-local `MAP`.  The following helpers
-// reconstruct borrowed slices from those pointers.
-//
-// SAFETY CONTRACT: every call site must guarantee that the `MapContext`
-// whose data was stashed outlives the traversal (ensured by the scoped
-// pattern in each public function).
+// clones level data into the thread-local `MAP`.  The following helpers
+// return borrowed slices from the cached owned copies.
 
-/// Reconstruct the line slice from the stashed pointer in `MAP`.
-///
-/// # Safety
-/// `MAP.lines_ptr` / `lines_len` must have been set by `stash_level_data`
-/// and the originating slice must still be live.
+/// Return the cached line slice from the thread-local `MAP`.
 #[inline]
 fn map_lines_from(m: &MapState) -> &[LineDef] {
-    // SAFETY: see stash_level_data contract.
-    unsafe { std::slice::from_raw_parts(m.lines_ptr, m.lines_len) }
+    &m.cached_lines
 }
 
-/// Reconstruct the sector slice from the stashed pointer in `MAP`.
+/// Return the cached sector slice from the thread-local `MAP`.
 #[inline]
 fn map_sectors_from(m: &MapState) -> &[Sector] {
-    unsafe { std::slice::from_raw_parts(m.sectors_ptr, m.sectors_len) }
+    &m.cached_sectors
 }
 
-/// Reconstruct the mobj slice from the stashed pointer in `MAP`.
+/// Return the cached mobj slice from the thread-local `MAP`.
 #[inline]
 fn map_mobjs_from(m: &MapState) -> &[MapObject] {
-    unsafe { std::slice::from_raw_parts(m.mobjs_ptr, m.mobjs_len) }
+    &m.cached_mobjs
 }
 
-/// Reconstruct the vertex slice from the stashed pointer in `MAP`.
+/// Return the cached vertex slice from the thread-local `MAP`.
 #[inline]
 fn map_vertexes_from(m: &MapState) -> &[Vertex] {
-    unsafe { std::slice::from_raw_parts(m.vertexes_ptr, m.vertexes_len) }
+    &m.cached_vertexes
 }
 
 /// Compute line opening and store results in `MAP`.
 fn do_line_opening(m: &mut MapState, line_idx: usize) {
-    let li = &map_lines_from(m)[line_idx];
-    let secs = map_sectors_from(m);
+    let li = m.cached_lines[line_idx];
     let mut temp = MapUtilState::new();
-    p_line_opening(&mut temp, li, secs);
+    p_line_opening(&mut temp, &li, &m.cached_sectors);
     m.opentop = temp.opentop;
     m.openbottom = temp.openbottom;
     m.openrange = temp.openrange;
     m.lowfloor = temp.lowfloor;
 }
 
-/// Store raw pointers to level data in `MAP` for callback access.
+/// Clone level data from `MapContext` into the thread-local `MAP` for
+/// callback access.  Bare `fn(&Intercept) -> bool` callbacks cannot
+/// capture references, so they read from these owned copies instead.
 ///
-/// The caller must ensure the context outlives the traversal that follows.
+/// The data is cloned once before each traversal.  Since `LineDef` and
+/// `Vertex` are `Copy` types, cloning their slices is a simple memcpy.
+/// `Sector` and `MapObject` implement `Clone` without heap fields (except
+/// `Sector::lines: Vec<usize>` which is a small allocation), so the
+/// performance overhead is minimal for DOOM-era map sizes.
 fn stash_level_data(m: &mut MapState, ctx: &dyn MapContext) {
-    let lines = ctx.lines();
-    m.lines_ptr = lines.as_ptr();
-    m.lines_len = lines.len();
-    let sectors = ctx.sectors();
-    m.sectors_ptr = sectors.as_ptr();
-    m.sectors_len = sectors.len();
-    let mobjs = ctx.mobjs();
-    m.mobjs_ptr = mobjs.as_ptr();
-    m.mobjs_len = mobjs.len();
-    let verts = ctx.vertexes();
-    m.vertexes_ptr = verts.as_ptr();
-    m.vertexes_len = verts.len();
+    // Re-use existing Vec capacity when possible (clone_from reuses alloc).
+    m.cached_lines.clear();
+    m.cached_lines.extend_from_slice(ctx.lines());
+    m.cached_sectors.clone_from(&ctx.sectors().to_vec());
+    m.cached_mobjs.clone_from(&ctx.mobjs().to_vec());
+    m.cached_vertexes.clear();
+    m.cached_vertexes.extend_from_slice(ctx.vertexes());
     m.skyflatnum = ctx.sky_flatnum();
 }
 
@@ -461,29 +444,21 @@ fn ptr_aim_traverse(intercept: &Intercept) -> bool {
 
                     if front.floorheight != back.floorheight {
                         let slope = (m.openbottom - m.shootz).fixed_div(dist);
-                        // SAFETY: sight::bottomslope is a pub static mut in
-                        // sight.rs — single-threaded access only.
-                        unsafe {
-                            if slope.0 > sight::bottomslope.0 {
-                                sight::bottomslope = slope;
-                            }
+                        if slope.0 > sight::get_bottomslope().0 {
+                            sight::set_bottomslope(slope);
                         }
                     }
 
                     if front.ceilingheight != back.ceilingheight {
                         let slope = (m.opentop - m.shootz).fixed_div(dist);
-                        // SAFETY: same single-threaded guarantee.
-                        unsafe {
-                            if slope.0 < sight::topslope.0 {
-                                sight::topslope = slope;
-                            }
+                        if slope.0 < sight::get_topslope().0 {
+                            sight::set_topslope(slope);
                         }
                     }
                 }
 
-                // If the slope window has closed, nothing more can be aimed at
-                // SAFETY: sight statics — single-threaded access.
-                let closed = unsafe { sight::topslope.0 <= sight::bottomslope.0 };
+                // If the slope window has closed, nothing more can be aimed at.
+                let closed = sight::get_topslope().0 <= sight::get_bottomslope().0;
                 if closed {
                     return false;
                 }
@@ -515,8 +490,7 @@ fn ptr_aim_traverse(intercept: &Intercept) -> bool {
                 let thingbottomslope = Fixed(th.z.0 - m.shootz.0).fixed_div(dist);
 
                 // Check if thing is outside the slope window
-                // SAFETY: sight statics — single-threaded access.
-                let (sight_bottom, sight_top) = unsafe { (sight::bottomslope, sight::topslope) };
+                let (sight_bottom, sight_top) = (sight::get_bottomslope(), sight::get_topslope());
 
                 if thingtopslope.0 < sight_bottom.0 {
                     return true; // shot over the thing
@@ -822,12 +796,8 @@ pub fn p_aim_line_attack(
     AIMSLOPE.set(Fixed(0));
 
     // Initialize auto-aim slope window: ±100*FRACUNIT/160 ≈ ±0.625 (~32°)
-    // SAFETY: sight::topslope/bottomslope are pub static mut in sight.rs —
-    // single-threaded access only.
-    unsafe {
-        sight::topslope = Fixed(100 * FRACUNIT / 160);
-        sight::bottomslope = Fixed(-(100 * FRACUNIT / 160));
-    }
+    sight::set_topslope(Fixed(100 * FRACUNIT / 160));
+    sight::set_bottomslope(Fixed(-(100 * FRACUNIT / 160)));
 
     // --- Phase 2: execute the path traverse (callback borrows MAP) ---
     ctx.do_path_traverse(x1, y1, x2, y2, PT_ADDLINES | PT_ADDTHINGS, ptr_aim_traverse);

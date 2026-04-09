@@ -140,3 +140,11 @@ pub use types::event::Event;
 
 // Player state structure
 pub use types::player::Player;
+
+// Map object (mobj) — world entity state
+pub use types::mobj::MapObject;
+
+// Trait-based platform abstraction (AAP §0.4.1 crate-root re-exports)
+pub use traits::audio::AudioBackend;
+pub use traits::platform::PlatformHost;
+pub use traits::renderer::Renderer;
